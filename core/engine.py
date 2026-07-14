@@ -48,7 +48,9 @@ class ConversionEngine:
     def __init__(self, max_workers: int = 4, verify_output: bool = True):
         self.max_workers = max(1, max_workers)
         self.verify_output = verify_output
-        self._executor = ThreadPoolExecutor(max_workers=self.max_workers, thread_name_prefix="fc-worker")
+        self._executor = ThreadPoolExecutor(
+            max_workers=self.max_workers, thread_name_prefix="fc-worker"
+        )
         self._tokens: dict[str, _CancellationToken] = {}
         self._lock = threading.Lock()
         self.logger = get_logger()
@@ -137,22 +139,54 @@ class ConversionEngine:
                 error=result.error,
             )
             if not result.success:
-                self.logger.warning("Conversion failed for %s: %s", job.source_path, result.error)
+                self.logger.warning(
+                    "Conversion failed for %s: %s", job.source_path, result.error
+                )
             return result
 
         except CancelledError as exc:
             duration = time.monotonic() - start
-            history.record(str(job.source_path), None, src_format, job.target_format, False, duration, str(exc))
-            return ConversionResult(job=job, success=False, message="Cancelled", error=str(exc), duration_seconds=duration)
+            history.record(
+                str(job.source_path),
+                None,
+                src_format,
+                job.target_format,
+                False,
+                duration,
+                str(exc),
+            )
+            return ConversionResult(
+                job=job,
+                success=False,
+                message="Cancelled",
+                error=str(exc),
+                duration_seconds=duration,
+            )
         except Exception as exc:  # noqa: BLE001
             duration = time.monotonic() - start
             error_message = f"{type(exc).__name__}: {exc}"
             self.logger.exception("Unhandled error converting %s", job.source_path)
-            history.record(str(job.source_path), None, src_format, job.target_format, False, duration, error_message)
-            return ConversionResult(job=job, success=False, message="Failed", error=error_message, duration_seconds=duration)
+            history.record(
+                str(job.source_path),
+                None,
+                src_format,
+                job.target_format,
+                False,
+                duration,
+                error_message,
+            )
+            return ConversionResult(
+                job=job,
+                success=False,
+                message="Failed",
+                error=error_message,
+                duration_seconds=duration,
+            )
 
 
-def build_output_path(source_path: Path, target_format: str, output_dir: Optional[Path] = None) -> Path:
+def build_output_path(
+    source_path: Path, target_format: str, output_dir: Optional[Path] = None
+) -> Path:
     """Compute a sensible output path: same stem, new extension, in
     ``output_dir`` if given, else alongside the source file."""
 

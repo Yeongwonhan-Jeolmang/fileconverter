@@ -55,7 +55,9 @@ class DocumentConverter(BaseConverter):
             notes.append("Pandoc found (extra text format support)")
         return True, "; ".join(notes)
 
-    def convert(self, job: ConversionJob, progress_cb: ProgressCallback = None) -> ConversionResult:
+    def convert(
+        self, job: ConversionJob, progress_cb: ProgressCallback = None
+    ) -> ConversionResult:
         def _do() -> None:
             src_ext = job.source_path.suffix.lower().lstrip(".")
             target = job.target_format.lower().lstrip(".")
@@ -79,13 +81,17 @@ class DocumentConverter(BaseConverter):
         return self._run_timed(job, _do)
 
     # ------------------------------------------------------------------
-    def _try_native(self, job: ConversionJob, src_ext: str, target: str, progress_cb) -> bool:
+    def _try_native(
+        self, job: ConversionJob, src_ext: str, target: str, progress_cb
+    ) -> bool:
         if src_ext in ("txt",) and target in ("md", "html", "htm"):
             text = job.source_path.read_text(encoding="utf-8", errors="replace")
             if target == "md":
                 job.output_path.write_text(text, encoding="utf-8")
             else:
-                escaped = text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+                escaped = (
+                    text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+                )
                 html = f"<html><body><pre>{escaped}</pre></body></html>"
                 job.output_path.write_text(html, encoding="utf-8")
             return True
@@ -94,9 +100,13 @@ class DocumentConverter(BaseConverter):
             try:
                 import markdown  # type: ignore
             except ImportError as exc:
-                raise MissingDependencyError("markdown", "Install with: pip install markdown") from exc
+                raise MissingDependencyError(
+                    "markdown", "Install with: pip install markdown"
+                ) from exc
             text = job.source_path.read_text(encoding="utf-8", errors="replace")
-            html_body = markdown.markdown(text, extensions=["extra", "tables", "fenced_code"])
+            html_body = markdown.markdown(
+                text, extensions=["extra", "tables", "fenced_code"]
+            )
             html = f"<html><head><meta charset='utf-8'></head><body>{html_body}</body></html>"
             job.output_path.write_text(html, encoding="utf-8")
             return True
@@ -105,7 +115,9 @@ class DocumentConverter(BaseConverter):
             try:
                 import html2text  # type: ignore
             except ImportError as exc:
-                raise MissingDependencyError("html2text", "Install with: pip install html2text") from exc
+                raise MissingDependencyError(
+                    "html2text", "Install with: pip install html2text"
+                ) from exc
             html = job.source_path.read_text(encoding="utf-8", errors="replace")
             converter = html2text.HTML2Text()
             job.output_path.write_text(converter.handle(html), encoding="utf-8")
@@ -127,7 +139,9 @@ class DocumentConverter(BaseConverter):
             try:
                 import docx  # type: ignore
             except ImportError as exc:
-                raise MissingDependencyError("python-docx", "Install with: pip install python-docx") from exc
+                raise MissingDependencyError(
+                    "python-docx", "Install with: pip install python-docx"
+                ) from exc
             document = docx.Document(str(job.source_path))
             text = "\n".join(p.text for p in document.paragraphs)
             job.output_path.write_text(text, encoding="utf-8")
@@ -137,7 +151,9 @@ class DocumentConverter(BaseConverter):
             try:
                 import docx  # type: ignore
             except ImportError as exc:
-                raise MissingDependencyError("python-docx", "Install with: pip install python-docx") from exc
+                raise MissingDependencyError(
+                    "python-docx", "Install with: pip install python-docx"
+                ) from exc
             document = docx.Document(str(job.source_path))
             parts = [f"<p>{p.text}</p>" for p in document.paragraphs]
             html = f"<html><body>{''.join(parts)}</body></html>"
@@ -152,7 +168,9 @@ class DocumentConverter(BaseConverter):
             try:
                 from pypdf import PdfReader  # type: ignore
             except ImportError as exc:
-                raise MissingDependencyError("pypdf", "Install with: pip install pypdf") from exc
+                raise MissingDependencyError(
+                    "pypdf", "Install with: pip install pypdf"
+                ) from exc
             reader = PdfReader(str(job.source_path))
             text = "\n\n".join(page.extract_text() or "" for page in reader.pages)
             job.output_path.write_text(text, encoding="utf-8")
@@ -165,7 +183,9 @@ class DocumentConverter(BaseConverter):
             from reportlab.lib.pagesizes import LETTER  # type: ignore
             from reportlab.pdfgen import canvas
         except ImportError as exc:
-            raise MissingDependencyError("reportlab", "Install with: pip install reportlab") from exc
+            raise MissingDependencyError(
+                "reportlab", "Install with: pip install reportlab"
+            ) from exc
 
         text = job.source_path.read_text(encoding="utf-8", errors="replace")
         c = canvas.Canvas(str(job.output_path), pagesize=LETTER)
@@ -199,13 +219,17 @@ class DocumentConverter(BaseConverter):
             progress_cb(0.4, "Running LibreOffice headless conversion")
         proc = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
         if proc.returncode != 0:
-            raise ConversionFailedError(f"LibreOffice conversion failed: {proc.stderr.strip()}")
+            raise ConversionFailedError(
+                f"LibreOffice conversion failed: {proc.stderr.strip()}"
+            )
         produced = out_dir / f"{job.source_path.stem}.{target}"
         if produced.exists() and produced != job.output_path:
             produced.replace(job.output_path)
         return job.output_path.exists()
 
-    def _try_pandoc(self, job: ConversionJob, src_ext: str, target: str, progress_cb) -> bool:
+    def _try_pandoc(
+        self, job: ConversionJob, src_ext: str, target: str, progress_cb
+    ) -> bool:
         pandoc = _find_pandoc()
         if not pandoc:
             return False
@@ -214,7 +238,9 @@ class DocumentConverter(BaseConverter):
         cmd = [pandoc, str(job.source_path), "-o", str(job.output_path)]
         proc = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
         if proc.returncode != 0:
-            raise ConversionFailedError(f"Pandoc conversion failed: {proc.stderr.strip()}")
+            raise ConversionFailedError(
+                f"Pandoc conversion failed: {proc.stderr.strip()}"
+            )
         return job.output_path.exists()
 
 

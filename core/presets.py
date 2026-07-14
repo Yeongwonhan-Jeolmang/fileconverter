@@ -64,20 +64,29 @@ def _save_raw(data: dict[str, dict[str, Any]]) -> None:
 
 def list_presets() -> list[Preset]:
     merged = {**BUILTIN_PRESETS, **_load_raw()}
-    return [Preset(name=n, target_format=v["target_format"], options=v.get("options", {})) for n, v in merged.items()]
+    return [
+        Preset(name=n, target_format=v["target_format"], options=v.get("options", {}))
+        for n, v in merged.items()
+    ]
 
 
 def get_preset(name: str) -> Preset:
     merged = {**BUILTIN_PRESETS, **_load_raw()}
     if name not in merged:
-        raise PresetError(f"No such preset: '{name}'. Run 'fileconverter presets' to list available presets.")
+        raise PresetError(
+            f"No such preset: '{name}'. Run 'fileconverter presets' to list available presets."
+        )
     v = merged[name]
-    return Preset(name=name, target_format=v["target_format"], options=v.get("options", {}))
+    return Preset(
+        name=name, target_format=v["target_format"], options=v.get("options", {})
+    )
 
 
 def save_preset(name: str, target_format: str, options: dict[str, Any]) -> None:
     if not name or "/" in name or "\\" in name:
-        raise PresetError("Preset name must be a non-empty string without path separators.")
+        raise PresetError(
+            "Preset name must be a non-empty string without path separators."
+        )
     data = _load_raw()
     data[name] = {"target_format": target_format, "options": options}
     _save_raw(data)

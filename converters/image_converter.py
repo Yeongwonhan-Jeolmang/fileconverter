@@ -18,7 +18,9 @@ from ..core.base import BaseConverter, ConversionJob, ConversionResult, Progress
 from ..core.exceptions import MissingDependencyError
 from ..core.registry import register
 
-_RASTER_FORMATS = frozenset({"png", "jpg", "jpeg", "bmp", "gif", "webp", "tiff", "tif", "ico"})
+_RASTER_FORMATS = frozenset(
+    {"png", "jpg", "jpeg", "bmp", "gif", "webp", "tiff", "tif", "ico"}
+)
 
 _PIL_MODE_FOR_EXT = {
     "jpg": "JPEG",
@@ -44,7 +46,9 @@ def _try_register_heif() -> None:
 
 class ImageConverter(BaseConverter):
     name = "Image Converter"
-    description = "Converts between raster image formats and to/from single & multi-page PDF."
+    description = (
+        "Converts between raster image formats and to/from single & multi-page PDF."
+    )
     input_formats = _RASTER_FORMATS | {"heic", "heif", "pdf"}
     output_formats = _RASTER_FORMATS | {"pdf"}
 
@@ -56,12 +60,16 @@ class ImageConverter(BaseConverter):
         except ImportError:
             return False, "Install with: pip install Pillow"
 
-    def convert(self, job: ConversionJob, progress_cb: ProgressCallback = None) -> ConversionResult:
+    def convert(
+        self, job: ConversionJob, progress_cb: ProgressCallback = None
+    ) -> ConversionResult:
         def _do() -> None:
             try:
                 from PIL import Image, ImageOps
             except ImportError as exc:
-                raise MissingDependencyError("Pillow", "Install with: pip install Pillow") from exc
+                raise MissingDependencyError(
+                    "Pillow", "Install with: pip install Pillow"
+                ) from exc
 
             _try_register_heif()
 
@@ -128,7 +136,8 @@ class ImageConverter(BaseConverter):
             import pypdfium2 as pdfium  # type: ignore
         except ImportError as exc:
             raise MissingDependencyError(
-                "pypdfium2", "Install with: pip install pypdfium2 (for PDF -> image conversion)"
+                "pypdfium2",
+                "Install with: pip install pypdfium2 (for PDF -> image conversion)",
             ) from exc
 
         pdf = pdfium.PdfDocument(str(job.source_path))
@@ -144,7 +153,9 @@ class ImageConverter(BaseConverter):
             page_path = out_dir / f"{stem}{suffix}.{target}"
             pil_image.save(page_path, _PIL_MODE_FOR_EXT.get(target, target.upper()))
             if progress_cb:
-                progress_cb(0.1 + 0.8 * (i + 1) / n_pages, f"Rendered page {i + 1}/{n_pages}")
+                progress_cb(
+                    0.1 + 0.8 * (i + 1) / n_pages, f"Rendered page {i + 1}/{n_pages}"
+                )
 
         if n_pages == 1:
             single_path = out_dir / f"{stem}.{target}"

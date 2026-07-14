@@ -32,12 +32,16 @@ class SpreadsheetConverter(BaseConverter):
         except ImportError:
             return False, "Install with: pip install pandas openpyxl"
 
-    def convert(self, job: ConversionJob, progress_cb: ProgressCallback = None) -> ConversionResult:
+    def convert(
+        self, job: ConversionJob, progress_cb: ProgressCallback = None
+    ) -> ConversionResult:
         def _do() -> None:
             try:
                 import pandas as pd
             except ImportError as exc:
-                raise MissingDependencyError("pandas", "Install with: pip install pandas openpyxl") from exc
+                raise MissingDependencyError(
+                    "pandas", "Install with: pip install pandas openpyxl"
+                ) from exc
 
             src_ext = job.source_path.suffix.lower().lstrip(".")
             target = job.target_format.lower().lstrip(".")
@@ -67,16 +71,24 @@ class SpreadsheetConverter(BaseConverter):
             return pd.read_excel(job.source_path, sheet_name=sheet_name)
         if src_ext == "ods":
             try:
-                return pd.read_excel(job.source_path, sheet_name=sheet_name, engine="odf")
+                return pd.read_excel(
+                    job.source_path, sheet_name=sheet_name, engine="odf"
+                )
             except ImportError as exc:
-                raise MissingDependencyError("odfpy", "Install with: pip install odfpy") from exc
+                raise MissingDependencyError(
+                    "odfpy", "Install with: pip install odfpy"
+                ) from exc
         if src_ext == "json":
-            return pd.read_json(job.source_path, orient=options.get("json_orient", "records"))
+            return pd.read_json(
+                job.source_path, orient=options.get("json_orient", "records")
+            )
         if src_ext == "parquet":
             try:
                 return pd.read_parquet(job.source_path)
             except ImportError as exc:
-                raise MissingDependencyError("pyarrow", "Install with: pip install pyarrow") from exc
+                raise MissingDependencyError(
+                    "pyarrow", "Install with: pip install pyarrow"
+                ) from exc
         raise ValueError(f"Unsupported spreadsheet source format: {src_ext}")
 
     def _write(self, df, job: ConversionJob, target: str, options) -> None:
@@ -84,21 +96,31 @@ class SpreadsheetConverter(BaseConverter):
             delimiter = options.get("delimiter", _DEFAULT_DELIMITER.get(target, ","))
             df.to_csv(job.output_path, sep=delimiter, index=False)
         elif target == "xlsx":
-            df.to_excel(job.output_path, index=False, sheet_name=str(options.get("sheet_name") or "Sheet1"))
+            df.to_excel(
+                job.output_path,
+                index=False,
+                sheet_name=str(options.get("sheet_name") or "Sheet1"),
+            )
         elif target == "xls":
             raise ValueError("Writing legacy .xls is not supported; use .xlsx instead.")
         elif target == "ods":
             try:
                 df.to_excel(job.output_path, index=False, engine="odf")
             except ImportError as exc:
-                raise MissingDependencyError("odfpy", "Install with: pip install odfpy") from exc
+                raise MissingDependencyError(
+                    "odfpy", "Install with: pip install odfpy"
+                ) from exc
         elif target == "json":
-            df.to_json(job.output_path, orient=options.get("json_orient", "records"), indent=2)
+            df.to_json(
+                job.output_path, orient=options.get("json_orient", "records"), indent=2
+            )
         elif target == "parquet":
             try:
                 df.to_parquet(job.output_path, index=False)
             except ImportError as exc:
-                raise MissingDependencyError("pyarrow", "Install with: pip install pyarrow") from exc
+                raise MissingDependencyError(
+                    "pyarrow", "Install with: pip install pyarrow"
+                ) from exc
         else:
             raise ValueError(f"Unsupported spreadsheet target format: {target}")
 

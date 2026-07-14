@@ -40,14 +40,20 @@ class VideoConverter(BaseConverter):
 
     def check_available(self) -> tuple[bool, str]:
         if not _ffmpeg_available():
-            return False, "ffmpeg not found on PATH. Install from https://ffmpeg.org/download.html"
+            return (
+                False,
+                "ffmpeg not found on PATH. Install from https://ffmpeg.org/download.html",
+            )
         return True, "OK"
 
-    def convert(self, job: ConversionJob, progress_cb: ProgressCallback = None) -> ConversionResult:
+    def convert(
+        self, job: ConversionJob, progress_cb: ProgressCallback = None
+    ) -> ConversionResult:
         def _do() -> None:
             if not _ffmpeg_available():
                 raise MissingDependencyError(
-                    "ffmpeg", "Install from https://ffmpeg.org/download.html and ensure it is on PATH."
+                    "ffmpeg",
+                    "Install from https://ffmpeg.org/download.html and ensure it is on PATH.",
                 )
 
             target = job.target_format.lower().lstrip(".")
@@ -110,7 +116,9 @@ class VideoConverter(BaseConverter):
         return_code = process.wait()
         if return_code != 0:
             tail = "".join(stderr_lines[-20:])
-            raise ConversionFailedError(f"ffmpeg exited with code {return_code}:\n{tail}")
+            raise ConversionFailedError(
+                f"ffmpeg exited with code {return_code}:\n{tail}"
+            )
 
 
 register(VideoConverter())

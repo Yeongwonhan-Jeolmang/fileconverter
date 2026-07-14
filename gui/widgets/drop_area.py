@@ -28,7 +28,9 @@ class DropArea(QFrame):
         title.setObjectName("Header")
         title.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
-        subtitle = QLabel("or use \u201cAdd Files\u201d / \u201cAdd Folder\u201d below \u2014 images, documents, audio, video, and archives are all supported")
+        subtitle = QLabel(
+            "or use \u201cAdd Files\u201d / \u201cAdd Folder\u201d below \u2014 images, documents, audio, video, and archives are all supported"
+        )
         subtitle.setObjectName("SubHeader")
         subtitle.setAlignment(Qt.AlignmentFlag.AlignCenter)
         subtitle.setWordWrap(True)
@@ -52,7 +54,11 @@ class DropArea(QFrame):
         self.setProperty("dragActive", False)
         self.style().unpolish(self)
         self.style().polish(self)
-        paths = [Path(url.toLocalFile()) for url in event.mimeData().urls() if url.toLocalFile()]
+        paths = [
+            Path(url.toLocalFile())
+            for url in event.mimeData().urls()
+            if url.toLocalFile()
+        ]
         if paths:
             self.filesDropped.emit(paths)
         event.acceptProposedAction()

@@ -13,6 +13,7 @@ import shutil
 import tarfile
 import zipfile
 from pathlib import Path
+from typing import Literal
 
 from ..core.base import BaseConverter, ConversionJob, ConversionResult, ProgressCallback
 from ..core.exceptions import MissingDependencyError
@@ -20,14 +21,17 @@ from ..core.registry import register
 
 _ARCHIVE_FORMATS = frozenset({"zip", "tar", "gz", "tgz", "bz2", "xz", "7z"})
 
-_TAR_MODE_FOR_TARGET = {
+_TarWriteMode = Literal["w", "w:gz", "w:bz2", "w:xz"]
+_TarReadMode = Literal["r", "r:gz", "r:bz2", "r:xz"]
+
+_TAR_MODE_FOR_TARGET: dict[str, _TarWriteMode] = {
     "tar": "w",
     "gz": "w:gz",
     "tgz": "w:gz",
     "bz2": "w:bz2",
     "xz": "w:xz",
 }
-_TAR_MODE_FOR_SOURCE = {
+_TAR_MODE_FOR_SOURCE: dict[str, _TarReadMode] = {
     "tar": "r",
     "gz": "r:gz",
     "tgz": "r:gz",
@@ -45,7 +49,9 @@ class ArchiveConverter(BaseConverter):
     def check_available(self) -> tuple[bool, str]:
         return True, "OK (7z support requires: pip install py7zr)"
 
-    def convert(self, job: ConversionJob, progress_cb: ProgressCallback = None) -> ConversionResult:
+    def convert(
+        self, job: ConversionJob, progress_cb: ProgressCallback = None
+    ) -> ConversionResult:
         def _do() -> None:
             src_ext = job.source_path.suffix.lower().lstrip(".")
             target = job.target_format.lower().lstrip(".")
@@ -105,7 +111,9 @@ class ArchiveConverter(BaseConverter):
         try:
             import py7zr  # type: ignore
         except ImportError as exc:
-            raise MissingDependencyError("py7zr", "Install with: pip install py7zr") from exc
+            raise MissingDependencyError(
+                "py7zr", "Install with: pip install py7zr"
+            ) from exc
         with py7zr.SevenZipFile(source, mode="r") as archive:
             archive.extractall(path=dest_dir)
 
@@ -113,7 +121,9 @@ class ArchiveConverter(BaseConverter):
         try:
             import py7zr  # type: ignore
         except ImportError as exc:
-            raise MissingDependencyError("py7zr", "Install with: pip install py7zr") from exc
+            raise MissingDependencyError(
+                "py7zr", "Install with: pip install py7zr"
+            ) from exc
         with py7zr.SevenZipFile(output_path, mode="w") as archive:
             archive.writeall(source_dir, arcname=".")
 
@@ -126,7 +136,9 @@ class FolderArchiveConverter(BaseConverter):
     input_formats = frozenset({"folder"})
     output_formats = _ARCHIVE_FORMATS
 
-    def convert(self, job: ConversionJob, progress_cb: ProgressCallback = None) -> ConversionResult:
+    def convert(
+        self, job: ConversionJob, progress_cb: ProgressCallback = None
+    ) -> ConversionResult:
         def _do() -> None:
             target = job.target_format.lower().lstrip(".")
             archive_helper = ArchiveConverter()

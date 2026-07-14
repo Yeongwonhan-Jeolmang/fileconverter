@@ -69,8 +69,8 @@ def record(
                VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 time.time(),
-                str(source_path),
-                str(output_path) if output_path else None,
+                source_path,
+                output_path,
                 source_format,
                 target_format,
                 1 if success else 0,

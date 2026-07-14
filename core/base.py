@@ -109,7 +109,9 @@ class BaseConverter:
 
         return True, "OK"
 
-    def convert(self, job: ConversionJob, progress_cb: ProgressCallback = None) -> ConversionResult:
+    def convert(
+        self, job: ConversionJob, progress_cb: ProgressCallback = None
+    ) -> ConversionResult:
         raise NotImplementedError
 
     # ------------------------------------------------------------------
