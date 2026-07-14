@@ -268,7 +268,7 @@ class MainWindow(QMainWindow):
         self.convert_btn.setEnabled(False)
         self.statusBar().showMessage(f"Converting {len(jobs)} file(s)\u2026")
 
-        self.engine.max_workers = self.workers_spin.value()
+        self.engine.set_max_workers(self.workers_spin.value())
         self._thread = QThread()
         self._worker = EngineWorker(self.engine, jobs)
         self._worker.moveToThread(self._thread)

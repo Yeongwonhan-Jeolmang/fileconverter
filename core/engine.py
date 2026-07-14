@@ -61,6 +61,20 @@ class ConversionEngine:
         if token:
             token.cancel()
 
+    def set_max_workers(self, max_workers: int) -> None:
+        """Resize the underlying thread pool. Safe to call between batches
+        (e.g. when the user changes the 'workers' setting in the GUI)."""
+
+        max_workers = max(1, max_workers)
+        if max_workers == self.max_workers:
+            return
+        old_executor = self._executor
+        self.max_workers = max_workers
+        self._executor = ThreadPoolExecutor(
+            max_workers=self.max_workers, thread_name_prefix="fc-worker"
+        )
+        old_executor.shutdown(wait=False)
+
     def shutdown(self, wait: bool = False) -> None:
         self._executor.shutdown(wait=wait, cancel_futures=not wait)
 

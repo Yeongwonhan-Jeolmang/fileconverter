@@ -161,6 +161,12 @@ class ImageConverter(BaseConverter):
             single_path = out_dir / f"{stem}.{target}"
             if single_path != job.output_path and single_path.exists():
                 single_path.replace(job.output_path)
+        else:
+            first_page = out_dir / f"{stem}_p1.{target}"
+            if first_page.exists() and first_page != job.output_path:
+                import shutil
+
+                shutil.copyfile(first_page, job.output_path)
 
 
 register(ImageConverter())

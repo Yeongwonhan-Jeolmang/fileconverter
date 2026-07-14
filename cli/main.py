@@ -80,17 +80,50 @@ def cli(verbose: bool) -> None:
 
 @cli.command()
 @click.argument("inputs", nargs=-1, required=True)
-@click.option("-t", "--to", "target_format", required=True, help="Target format, e.g. 'pdf', 'mp3', 'png'.")
-@click.option("-o", "--output-dir", type=click.Path(file_okay=False), default=None, help="Output directory (default: alongside each source file).")
-@click.option("-r", "--recursive", is_flag=True, help="Recurse into directories / glob patterns.")
-@click.option("--preset", default=None, help="Apply a saved preset (see 'fileconverter presets').")
-@click.option("-O", "--option", "raw_options", multiple=True, help="Converter option as key=value. Repeatable.")
-@click.option("--workers", default=None, type=int, help="Number of parallel conversion workers (default: from config).")
-@click.option("--dry-run", is_flag=True, help="Show what would be converted without doing it.")
-@click.option("--json-output", is_flag=True, help="Print machine-readable JSON results (for scripting).")
+@click.option(
+    "-t",
+    "--to",
+    "target_format",
+    default=None,
+    help="Target format, e.g. 'pdf', 'mp3', 'png'. Required unless --preset supplies one.",
+)
+@click.option(
+    "-o",
+    "--output-dir",
+    type=click.Path(file_okay=False),
+    default=None,
+    help="Output directory (default: alongside each source file).",
+)
+@click.option(
+    "-r", "--recursive", is_flag=True, help="Recurse into directories / glob patterns."
+)
+@click.option(
+    "--preset", default=None, help="Apply a saved preset (see 'fileconverter presets')."
+)
+@click.option(
+    "-O",
+    "--option",
+    "raw_options",
+    multiple=True,
+    help="Converter option as key=value. Repeatable.",
+)
+@click.option(
+    "--workers",
+    default=None,
+    type=int,
+    help="Number of parallel conversion workers (default: from config).",
+)
+@click.option(
+    "--dry-run", is_flag=True, help="Show what would be converted without doing it."
+)
+@click.option(
+    "--json-output",
+    is_flag=True,
+    help="Print machine-readable JSON results (for scripting).",
+)
 def convert(
     inputs: tuple[str, ...],
-    target_format: str,
+    target_format: Optional[str],
     output_dir: Optional[str],
     recursive: bool,
     preset: Optional[str],
@@ -124,6 +157,11 @@ def convert(
         merged = {**preset_obj.options, **options_dict}
         options_dict = merged
 
+    if not target_format:
+        raise click.ClickException(
+            "Target format required: pass -t/--to, or --preset with a preset that defines one."
+        )
+
     try:
         files = expand_inputs(list(inputs), recursive=recursive)
     except FileNotFoundError as exc:
@@ -148,7 +186,9 @@ def convert(
             _echo(f"[dry-run] {job.source_path}  ->  {job.output_path}")
         return
 
-    engine = ConversionEngine(max_workers=workers or cfg.max_workers, verify_output=cfg.verify_output)
+    engine = ConversionEngine(
+        max_workers=workers or cfg.max_workers, verify_output=cfg.verify_output
+    )
     results = []
 
     if console and not json_output:
@@ -159,21 +199,31 @@ def convert(
             TimeElapsedColumn(),
             console=console,
         ) as progress_ui:
-            task_ids = {job.job_id: progress_ui.add_task(job.source_path.name, total=100) for job in jobs}
+            task_ids = {
+                job.job_id: progress_ui.add_task(job.source_path.name, total=100)
+                for job in jobs
+            }
 
             def on_progress(job_id: str, fraction: float, message: str) -> None:
-                progress_ui.update(task_ids[job_id], completed=fraction * 100, description=f"{Path(job_id.split('->')[0]).name}: {message}")
+                progress_ui.update(
+                    task_ids[job_id],
+                    completed=fraction * 100,
+                    description=f"{Path(job_id.split('->')[0]).name}: {message}",
+                )
 
             def on_done(result) -> None:
                 results.append(result)
 
             engine.run_batch(jobs, on_progress=on_progress, on_done=on_done)
     else:
+
         def on_done(result) -> None:
             results.append(result)
             status = "OK" if result.success else "FAILED"
             if not json_output:
-                _echo(f"[{status}] {result.job.source_path} -> {result.output_path or '?'}")
+                _echo(
+                    f"[{status}] {result.job.source_path} -> {result.output_path or '?'}"
+                )
 
         engine.run_batch(jobs, on_done=on_done)
 
@@ -203,10 +253,18 @@ def convert(
 
 @cli.command()
 @click.argument("folder", type=click.Path(exists=True, file_okay=False))
-@click.option("-t", "--to", "target_format", required=True, help="Target format to convert new files to.")
+@click.option(
+    "-t",
+    "--to",
+    "target_format",
+    required=True,
+    help="Target format to convert new files to.",
+)
 @click.option("-o", "--output-dir", type=click.Path(file_okay=False), default=None)
 @click.option("--interval", default=2.0, type=float, help="Poll interval in seconds.")
-def watch(folder: str, target_format: str, output_dir: Optional[str], interval: float) -> None:
+def watch(
+    folder: str, target_format: str, output_dir: Optional[str], interval: float
+) -> None:
     """Watch a folder and auto-convert any new files that appear in it.
 
     Press Ctrl+C to stop watching.
@@ -215,14 +273,25 @@ def watch(folder: str, target_format: str, output_dir: Optional[str], interval: 
     from ..core.watcher import FolderWatcher
 
     cfg = config_module.load_config()
-    engine = ConversionEngine(max_workers=cfg.max_workers, verify_output=cfg.verify_output)
+    engine = ConversionEngine(
+        max_workers=cfg.max_workers, verify_output=cfg.verify_output
+    )
     out_dir = Path(output_dir) if output_dir else None
 
     def announce(path: Path) -> None:
         _echo(f"Detected new file: {path.name} -- converting to {target_format}")
 
-    watcher = FolderWatcher(Path(folder), target_format, engine, output_dir=out_dir, poll_interval=interval, on_new_job=announce)
-    _echo(f"Watching '{folder}' for new files (target format: {target_format}). Press Ctrl+C to stop.")
+    watcher = FolderWatcher(
+        Path(folder),
+        target_format,
+        engine,
+        output_dir=out_dir,
+        poll_interval=interval,
+        on_new_job=announce,
+    )
+    _echo(
+        f"Watching '{folder}' for new files (target format: {target_format}). Press Ctrl+C to stop."
+    )
     watcher.start()
     try:
         while True:
@@ -246,7 +315,11 @@ def doctor() -> None:
         table.add_column("Status")
         for conv in all_converters():
             available, reason = conv.check_available()
-            status = "[green]Available[/green]" if available else f"[red]Missing[/red] — {reason}"
+            status = (
+                "[green]Available[/green]"
+                if available
+                else f"[red]Missing[/red] — {reason}"
+            )
             formats = ", ".join(sorted(conv.input_formats | conv.output_formats))
             table.add_row(conv.name, formats, status if available else status)
         console.print(table)
@@ -309,7 +382,13 @@ def presets_delete(name: str) -> None:
 
 @cli.command()
 @click.option("--limit", default=50, help="Number of recent entries to show.")
-@click.option("--export", "export_path", type=click.Path(), default=None, help="Export full history to a CSV file.")
+@click.option(
+    "--export",
+    "export_path",
+    type=click.Path(),
+    default=None,
+    help="Export full history to a CSV file.",
+)
 @click.option("--clear", is_flag=True, help="Clear all history.")
 def history(limit: int, export_path: Optional[str], clear: bool) -> None:
     """View, export, or clear the conversion history log."""
@@ -334,13 +413,23 @@ def history(limit: int, export_path: Optional[str], clear: bool) -> None:
         import datetime
 
         for e in entries:
-            when = datetime.datetime.fromtimestamp(e.timestamp).strftime("%Y-%m-%d %H:%M:%S")
-            status = "[green]OK[/green]" if e.success else f"[red]FAILED[/red] {e.error or ''}"
-            table.add_row(when, Path(e.source_path).name, e.target_format or "-", status)
+            when = datetime.datetime.fromtimestamp(e.timestamp).strftime(
+                "%Y-%m-%d %H:%M:%S"
+            )
+            status = (
+                "[green]OK[/green]"
+                if e.success
+                else f"[red]FAILED[/red] {e.error or ''}"
+            )
+            table.add_row(
+                when, Path(e.source_path).name, e.target_format or "-", status
+            )
         console.print(table)
     else:
         for e in entries:
-            click.echo(f"{e.source_path} -> {e.target_format}: {'OK' if e.success else 'FAILED'}")
+            click.echo(
+                f"{e.source_path} -> {e.target_format}: {'OK' if e.success else 'FAILED'}"
+            )
 
 
 @cli.command()
