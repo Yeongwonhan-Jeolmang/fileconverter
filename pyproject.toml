@@ -1,2 +1,77 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "fileconverter"
+version = "1.0.0"
+description = "A modular file conversion toolkit with both GUI and CLI front-ends."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "Hana Eun-Seo, Yuuna Iwai, Touko Nakajima, Florian van den Bersselaar" }]
+keywords = ["file conversion", "converter", "gui", "cli", "images", "documents", "audio", "video"]
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Environment :: Console",
+    "Environment :: X11 Applications :: Qt",
+    "Intended Audience :: End Users/Desktop",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Topic :: Multimedia",
+    "Topic :: Office/Business",
+    "Topic :: Utilities",
+]
+
+dependencies = [
+    "click>=8.1",
+    "rich>=13.7",
+]
+
+[project.optional-dependencies]
+gui = ["PySide6>=6.6"]
+images = ["Pillow>=10.0", "pypdfium2>=4.30"]
+images-heic = ["pillow-heif>=0.15"]
+documents = ["python-docx>=1.1", "pypdf>=4.0", "reportlab>=4.1", "markdown>=3.6", "html2text>=2020.1.16", "beautifulsoup4>=4.12"]
+spreadsheets = ["pandas>=2.2", "openpyxl>=3.1", "odfpy>=1.4", "pyarrow>=15.0"]
+audio = ["pydub>=0.25"]
+archives = ["py7zr>=0.21"]
+watch = ["watchdog>=4.0"]
+all = [
+    "PySide6>=6.6",
+    "Pillow>=10.0",
+    "pypdfium2>=4.30",
+    "pillow-heif>=0.15",
+    "python-docx>=1.1",
+    "pypdf>=4.0",
+    "reportlab>=4.1",
+    "markdown>=3.6",
+    "html2text>=2020.1.16",
+    "beautifulsoup4>=4.12",
+    "pandas>=2.2",
+    "openpyxl>=3.1",
+    "odfpy>=1.4",
+    "pyarrow>=15.0",
+    "pydub>=0.25",
+    "py7zr>=0.21",
+    "watchdog>=4.0",
+]
+dev = ["pytest>=8.0", "pytest-cov>=5.0", "pyinstaller>=6.6", "black>=24.0", "ruff>=0.4"]
+
+[project.scripts]
+fileconverter = "cli.main:main"
+fileconverter-gui = "gui.app:main"
+
+[tool.setuptools.packages.find]
+include = ["fileconverter*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 110
+target-version = "py310"
+
 [tool.pyrefly]
 python-interpreter-path = ".venv/bin/python"
