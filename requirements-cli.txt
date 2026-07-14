@@ -1,0 +1,7 @@
+# Minimal install for CLI-only usage (no GUI, no PySide6).
+# Add per-format extras as needed — see README.md "Installing only what you need".
+click>=8.1
+rich>=13.7
+Pillow>=10.0
+pandas>=2.2
+openpyxl>=3.1

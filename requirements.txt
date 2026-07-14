@@ -1,0 +1,33 @@
+# Core dependencies (CLI always works with just these).
+click>=8.1
+rich>=13.7
+
+# GUI (priority front-end). Skip if you only want the CLI.
+PySide6>=6.6
+
+# Images
+Pillow>=10.0
+pypdfium2>=4.30      # PDF -> image rendering
+
+# Documents
+python-docx>=1.1
+pypdf>=4.0
+reportlab>=4.1       # text/markdown -> PDF
+markdown>=3.6
+html2text>=2020.1.16
+beautifulsoup4>=4.12
+
+# Spreadsheets
+pandas>=2.2
+openpyxl>=3.1        # xlsx read/write
+odfpy>=1.4           # ods read/write (optional)
+pyarrow>=15.0         # parquet read/write (optional)
+
+# Audio (also requires the ffmpeg binary on PATH — see README)
+pydub>=0.25
+
+# Archives
+py7zr>=0.21          # 7z support (optional; zip/tar work with no extra deps)
+
+# Folder watching (optional; a polling fallback is used if absent)
+watchdog>=4.0
