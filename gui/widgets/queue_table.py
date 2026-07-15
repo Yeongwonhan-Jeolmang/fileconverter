@@ -25,7 +25,11 @@ class QueueTable(QTableWidget):
     def __init__(self, parent=None):
         super().__init__(0, len(COLUMNS), parent)
         self.setHorizontalHeaderLabels(COLUMNS)
-        self.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        header = self.horizontalHeader()
+        header.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        header.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
+        header.setMinimumSectionSize(110)
         self.verticalHeader().setVisible(False)
         self.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)

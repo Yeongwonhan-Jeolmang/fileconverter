@@ -60,11 +60,28 @@ all = [
 dev = ["pytest>=8.0", "pytest-cov>=5.0", "pyinstaller>=6.6", "black>=24.0", "ruff>=0.4"]
 
 [project.scripts]
-fileconverter = "cli.main:main"
-fileconverter-gui = "gui.app:main"
+fileconverter = "fileconverter.cli.main:main"
+fileconverter-gui = "fileconverter.gui.app:main"
 
-[tool.setuptools.packages.find]
-include = ["fileconverter*"]
+[tool.setuptools]
+packages = [
+    "fileconverter",
+    "fileconverter.cli",
+    "fileconverter.converters",
+    "fileconverter.core",
+    "fileconverter.gui",
+    "fileconverter.gui.widgets",
+    "fileconverter.utils",
+]
+
+[tool.setuptools.package-dir]
+fileconverter = "."
+"fileconverter.cli" = "cli"
+"fileconverter.converters" = "converters"
+"fileconverter.core" = "core"
+"fileconverter.gui" = "gui"
+"fileconverter.gui.widgets" = "gui/widgets"
+"fileconverter.utils" = "utils"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
