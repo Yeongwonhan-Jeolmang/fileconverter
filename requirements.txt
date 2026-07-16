@@ -31,3 +31,23 @@ py7zr>=0.21          # 7z support (optional; zip/tar work with no extra deps)
 
 # Folder watching (optional; a polling fallback is used if absent)
 watchdog>=4.0
+
+# Data formats (YAML/TOML <-> JSON/XML)
+pyyaml>=6.0
+tomli>=2.0; python_version < "3.11"
+tomli-w>=1.0
+
+# Vector graphics (SVG -> PNG/PDF, DXF -> SVG)
+cairosvg>=2.7
+ezdxf>=1.1
+
+# Fonts (TTF/OTF/WOFF/WOFF2)
+fonttools>=4.50
+brotli>=1.1        # needed for WOFF2
+
+# Ebooks (EPUB text/HTML extraction natively; MOBI/AZW3/FB2 need Calibre's
+# ebook-convert CLI on PATH, which is a separate app install, not pip)
+ebooklib>=0.18
+
+# Contacts & calendar (VCF/vCard, ICS/iCalendar <-> CSV)
+vobject>=0.9

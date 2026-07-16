@@ -60,6 +60,11 @@ Most file converters are single-purpose (only images, or only via a website that
 | **Audio** | MP3, WAV, OGG, FLAC, AAC, M4A, WMA, AIFF | **ffmpeg** binary on PATH + `pydub`. |
 | **Video** | MP4, AVI, MOV, MKV, WEBM, FLV, WMV, GIF export, audio extraction | **ffmpeg** binary on PATH. |
 | **Archives** | ZIP, TAR, TAR.GZ, TAR.BZ2, TAR.XZ, 7Z, folder → archive, archive → folder | 7Z needs `py7zr`; everything else is in the standard library. |
+| **Data** | YAML, JSON, TOML, XML | `pyyaml` for YAML, `tomli`/`tomli-w` for TOML. XML uses the standard library. |
+| **Vector graphics** | SVG → PNG/PDF, DXF → SVG | `cairosvg` for SVG rendering, `ezdxf` for reading DXF. |
+| **Fonts** | TTF, OTF, WOFF, WOFF2 | `fonttools` (WOFF2 also needs `brotli`). |
+| **Ebooks** | EPUB, MOBI, AZW3, FB2, TXT, HTML | EPUB → TXT/HTML needs `ebooklib` + `beautifulsoup4`. MOBI/AZW3/FB2 and everything else use **Calibre**'s `ebook-convert` CLI if it's on PATH. |
+| **Contacts & calendar** | VCF (vCard) ⇄ CSV, ICS (iCalendar) ⇄ CSV | `vobject`. Note: VCF and ICS only convert to/from CSV, not to each other. |
 
 Run `fileconverter formats` any time to see the exact matrix your installed environment currently supports, and `fileconverter doctor` to see what's missing.
 
@@ -97,6 +102,8 @@ Audio and video conversion additionally require the **ffmpeg** binary to be on y
 
 Full DOCX/ODT/PPTX ⇄ PDF fidelity additionally benefits from **LibreOffice** (free, [libreoffice.org](https://www.libreoffice.org/)) being installed — FileConverter auto-detects it, no configuration needed.
 
+MOBI/AZW3/FB2 ebook conversions additionally benefit from **Calibre** (free, [calibre-ebook.com](https://calibre-ebook.com/)) being installed — FileConverter auto-detects its `ebook-convert` CLI on PATH, no configuration needed. EPUB → TXT/HTML works without it.
+
 ## Installing only what you need
 
 The core package (`pip install -e .`) only pulls in `click` and `rich` — enough for the CLI to run and report which converters are unavailable. Install format families à la carte with extras:
@@ -110,6 +117,11 @@ pip install -e ".[spreadsheets]" # pandas, openpyxl, odfpy, pyarrow
 pip install -e ".[audio]"        # pydub (still needs the ffmpeg binary separately)
 pip install -e ".[archives]"     # py7zr (zip/tar work with zero extras)
 pip install -e ".[watch]"        # watchdog (folder watching still works without it, just polls)
+pip install -e ".[data]"         # pyyaml, tomli/tomli-w (JSON/XML work with zero extras)
+pip install -e ".[vector]"       # cairosvg, ezdxf
+pip install -e ".[fonts]"        # fonttools, brotli
+pip install -e ".[ebooks]"       # ebooklib, beautifulsoup4 (MOBI/AZW3/FB2 still need Calibre separately)
+pip install -e ".[contacts-calendar]"  # vobject
 pip install -e ".[all]"          # everything above
 pip install -e ".[dev]"          # pytest, pyinstaller, black, ruff — for contributors
 ```
@@ -299,7 +311,12 @@ fileconverter/
 │   ├── spreadsheet_converter.py
 │   ├── audio_converter.py
 │   ├── video_converter.py
-│   └── archive_converter.py
+│   ├── archive_converter.py
+│   ├── data_converter.py
+│   ├── vector_converter.py
+│   ├── font_converter.py
+│   ├── ebook_converter.py
+│   └── contact_calendar_converter.py
 ├── gui/                    # PySide6 desktop front-end
 │   ├── app.py               # Main window
 │   ├── theme.py               # Dark/light QSS stylesheets

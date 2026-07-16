@@ -38,6 +38,11 @@ spreadsheets = ["pandas>=2.2", "openpyxl>=3.1", "odfpy>=1.4", "pyarrow>=15.0"]
 audio = ["pydub>=0.25"]
 archives = ["py7zr>=0.21"]
 watch = ["watchdog>=4.0"]
+data = ["pyyaml>=6.0", "tomli>=2.0; python_version < \"3.11\"", "tomli-w>=1.0"]
+vector = ["cairosvg>=2.7", "ezdxf>=1.1"]
+fonts = ["fonttools>=4.50", "brotli>=1.1"]
+ebooks = ["ebooklib>=0.18", "beautifulsoup4>=4.12"]
+contacts-calendar = ["vobject>=0.9"]
 all = [
     "PySide6>=6.6",
     "Pillow>=10.0",
@@ -56,6 +61,15 @@ all = [
     "pydub>=0.25",
     "py7zr>=0.21",
     "watchdog>=4.0",
+    "pyyaml>=6.0",
+    "tomli>=2.0; python_version < \"3.11\"",
+    "tomli-w>=1.0",
+    "cairosvg>=2.7",
+    "ezdxf>=1.1",
+    "fonttools>=4.50",
+    "brotli>=1.1",
+    "ebooklib>=0.18",
+    "vobject>=0.9",
 ]
 dev = ["pytest>=8.0", "pytest-cov>=5.0", "pyinstaller>=6.6", "black>=24.0", "ruff>=0.4"]
 
