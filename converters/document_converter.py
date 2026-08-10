@@ -11,11 +11,11 @@ Layered strategy (most specific -> most general):
 from __future__ import annotations
 
 import shutil
-import subprocess
 from pathlib import Path
 
 from ..core.base import BaseConverter, ConversionJob, ConversionResult, ProgressCallback
 from ..core.exceptions import ConversionFailedError, MissingDependencyError
+from ..core.proc_utils import run_killable
 from ..core.registry import register
 
 _TEXT_LIKE = frozenset({"txt", "md", "html", "htm"})
@@ -217,7 +217,7 @@ class DocumentConverter(BaseConverter):
         ]
         if progress_cb:
             progress_cb(0.4, "Running LibreOffice headless conversion")
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
+        proc = run_killable(cmd, progress_cb=progress_cb, timeout=180)
         if proc.returncode != 0:
             raise ConversionFailedError(
                 f"LibreOffice conversion failed: {proc.stderr.strip()}"
@@ -236,7 +236,8 @@ class DocumentConverter(BaseConverter):
         if progress_cb:
             progress_cb(0.4, "Running Pandoc")
         cmd = [pandoc, str(job.source_path), "-o", str(job.output_path)]
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+        # See _try_libreoffice: run_killable makes this cancellable.
+        proc = run_killable(cmd, progress_cb=progress_cb, timeout=120)
         if proc.returncode != 0:
             raise ConversionFailedError(
                 f"Pandoc conversion failed: {proc.stderr.strip()}"

@@ -47,7 +47,9 @@ class HistoryEntry:
 
 def _connect() -> sqlite3.Connection:
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(HISTORY_DB)
+    conn = sqlite3.connect(HISTORY_DB, timeout=30.0)
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA busy_timeout=30000")
     conn.execute(_SCHEMA)
     return conn
 

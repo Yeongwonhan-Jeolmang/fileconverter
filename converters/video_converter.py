@@ -15,7 +15,12 @@ import shutil
 import subprocess
 
 from ..core.base import BaseConverter, ConversionJob, ConversionResult, ProgressCallback
-from ..core.exceptions import ConversionFailedError, MissingDependencyError
+from ..core.exceptions import (
+    ConversionFailedError,
+    JobCancelledError,
+    MissingDependencyError,
+)
+from ..core.proc_utils import kill_process_tree, popen_killable
 from ..core.registry import register
 
 _VIDEO_FORMATS = frozenset({"mp4", "avi", "mov", "mkv", "webm", "flv", "wmv"})
@@ -92,28 +97,48 @@ class VideoConverter(BaseConverter):
         return self._run_timed(job, _do)
 
     def _run_with_progress(self, cmd: list[str], progress_cb: ProgressCallback) -> None:
-        process = subprocess.Popen(
+        process = popen_killable(
             cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1
         )
+
+        register = getattr(progress_cb, "register_process", None)
+        unregister = getattr(progress_cb, "unregister_process", None)
+        if register is not None:
+            register(process)
+
         duration_seconds: float | None = None
         stderr_lines: list[str] = []
+        cancelled = False
 
-        assert process.stdout is not None
-        for line in process.stdout:
-            stderr_lines.append(line)
-            if duration_seconds is None:
-                match = _DURATION_RE.search(line)
-                if match:
-                    h, m, s = match.groups()
-                    duration_seconds = int(h) * 3600 + int(m) * 60 + float(s)
-            time_match = _TIME_RE.search(line)
-            if time_match and duration_seconds and progress_cb:
-                h, m, s = time_match.groups()
-                elapsed = int(h) * 3600 + int(m) * 60 + float(s)
-                fraction = min(0.95, 0.1 + 0.85 * (elapsed / duration_seconds))
-                progress_cb(fraction, "Encoding")
+        try:
+            assert process.stdout is not None
+            for line in process.stdout:
+                stderr_lines.append(line)
+                if duration_seconds is None:
+                    match = _DURATION_RE.search(line)
+                    if match:
+                        h, m, s = match.groups()
+                        duration_seconds = int(h) * 3600 + int(m) * 60 + float(s)
+                time_match = _TIME_RE.search(line)
+                if time_match and duration_seconds and progress_cb:
+                    h, m, s = time_match.groups()
+                    elapsed = int(h) * 3600 + int(m) * 60 + float(s)
+                    fraction = min(0.95, 0.1 + 0.85 * (elapsed / duration_seconds))
+                    try:
+                        progress_cb(fraction, "Encoding")
+                    except JobCancelledError:
+                        cancelled = True
+                        kill_process_tree(process)
+                        break
+        finally:
+            if unregister is not None:
+                unregister()
 
         return_code = process.wait()
+
+        if cancelled:
+            raise JobCancelledError("Job cancelled by user")
+
         if return_code != 0:
             tail = "".join(stderr_lines[-20:])
             raise ConversionFailedError(

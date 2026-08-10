@@ -9,6 +9,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Optional
 
+from .exceptions import JobCancelledError
+
 ProgressCallback = Optional[Callable[[float, str], None]]
 """Signature: callback(fraction_complete: 0.0-1.0, message: str) -> None"""
 
@@ -132,6 +134,9 @@ class BaseConverter:
                 duration_seconds=duration,
                 output_path=job.output_path,
             )
+        except JobCancelledError:
+
+            raise
         except Exception as exc:  # noqa: BLE001 — convert to structured result
             duration = time.monotonic() - start
             return ConversionResult(

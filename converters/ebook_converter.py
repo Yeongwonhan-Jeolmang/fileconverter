@@ -11,11 +11,11 @@ document_converter.py:
 from __future__ import annotations
 
 import shutil
-import subprocess
 from pathlib import Path
 
 from ..core.base import BaseConverter, ConversionJob, ConversionResult, ProgressCallback
 from ..core.exceptions import ConversionFailedError, MissingDependencyError
+from ..core.proc_utils import run_killable
 from ..core.registry import register
 
 _EBOOK_FORMATS = frozenset({"epub", "mobi", "azw3", "fb2", "txt", "html"})
@@ -75,7 +75,7 @@ class EbookConverter(BaseConverter):
 
             calibre = _find_ebook_convert()
             if calibre:
-                self._calibre_convert(calibre, job)
+                self._calibre_convert(calibre, job, progress_cb)
             else:
                 raise MissingDependencyError(
                     "ebook-convert",
@@ -119,9 +119,11 @@ class EbookConverter(BaseConverter):
             )
             job.output_path.write_text(html_doc, encoding="utf-8")
 
-    def _calibre_convert(self, calibre_bin: str, job: ConversionJob) -> None:
+    def _calibre_convert(
+        self, calibre_bin: str, job: ConversionJob, progress_cb: ProgressCallback = None
+    ) -> None:
         cmd = [calibre_bin, str(job.source_path), str(job.output_path)]
-        result = subprocess.run(cmd, capture_output=True, text=True)
+        result = run_killable(cmd, progress_cb=progress_cb)
         if result.returncode != 0:
             raise ConversionFailedError(
                 f"ebook-convert failed: {result.stderr.strip() or result.stdout.strip()}"

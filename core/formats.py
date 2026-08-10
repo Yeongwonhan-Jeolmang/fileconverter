@@ -57,17 +57,45 @@ def normalize_ext(ext_or_path: str | Path) -> str:
 
 
 def detect_format(path: Path) -> str:
-    """Best-effort format detection: extension first, magic bytes fallback.
-
-    Returns a lowercase extension-like string (e.g. "png", "docx") or ""
-    if nothing could be determined.
-    """
+    """Best-effort format detection: extension first, magic bytes fallback."""
 
     path = Path(path)
     ext = normalize_ext(path)
-    if ext:
-        return ext
-    return sniff_format(path) or ""
+    if not ext:
+        return sniff_format(path) or ""
+
+    if path.is_file():
+        sniffed = sniff_format(path)
+        if (
+            sniffed
+            and sniffed != ext
+            and sniffed not in _WEAK_SNIFF_FORMATS
+            and not _formats_are_related(ext, sniffed)
+        ):
+            return sniffed
+    return ext
+
+
+_WEAK_SNIFF_FORMATS = frozenset({"bmp"})
+
+
+_RELATED_FORMAT_GROUPS: list[frozenset[str]] = [
+    frozenset({"zip", *_ZIP_SIGNATURES.values()}),
+    frozenset({"jpg", "jpeg"}),
+    frozenset({"mp4", "mov", "m4a", "m4v"}),
+    frozenset({"wav", "avi"}),
+    frozenset({"mkv", "webm"}),
+    frozenset({"gz", "tgz"}),
+]
+
+
+def _formats_are_related(ext: str, sniffed: str) -> bool:
+    """True if ``ext`` and ``sniffed`` are different labels for what is
+    effectively the same underlying container (or simply indistinguishable
+    with byte-signature sniffing alone), so a mismatch between them
+    shouldn't be treated as a "wrong extension"."""
+
+    return any(ext in group and sniffed in group for group in _RELATED_FORMAT_GROUPS)
 
 
 def sniff_format(path: Path) -> str | None:

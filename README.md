@@ -6,7 +6,7 @@
 [![Code style: black](https://img.shields.io/badge/code%20style-black-000000.svg)](https://github.com/psf/black)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
 
-A modular, professional-grade file conversion toolkit with both a **GUI** (primary) and a **CLI**. Convert images, documents, spreadsheets, audio, video, and archives.
+A file conversion toolkit with both a **GUI** (primary) and a **CLI**. Convert images, documents, spreadsheets, audio, video, and archives.
 
 Runs on Windows, macOS, and Linux. Works as a normal Python package, or as a **standalone executable** you can hand to someone who has never installed Python.
 
@@ -20,6 +20,7 @@ Runs on Windows, macOS, and Linux. Works as a normal Python package, or as a **s
 - [Installing only what you need](#installing-only-what-you-need)
 - [Using the GUI](#using-the-gui)
 - [Using the CLI](#using-the-cli)
+- [Retrying failed conversions](#retrying-failed-conversions)
 - [Presets](#presets)
 - [Folder watching](#folder-watching)
 - [Conversion history](#conversion-history)
@@ -45,9 +46,12 @@ Most file converters are single-purpose (only images, or only via a website that
 - **Folder watching.** Point it at a "drop folder" and it auto-converts anything you save into it — great for scanner/export folders.
 - **Automatic fallback engines.** If a document conversion has no lightweight native path, FileConverter automatically detects and uses LibreOffice or Pandoc on your system, instead of just failing.
 - **Output verification.** After each conversion, the output file is sanity-checked (not just "does a file exist") — catches truncated/corrupt results other converters miss.
+- **Resumable batches.** If some files in a big batch fail (a transient LibreOffice hiccup, a locked file, ffmpeg briefly unavailable), retry just the failures — automatically inline with `--retry`, or later with `fileconverter retry results.json` — without re-selecting files or reconverting what already succeeded.
+- **Cancellation that actually cancels.** Cancelling a running job kills the underlying ffmpeg/LibreOffice/Pandoc/Calibre process, instead of discarding the result while the process keeps running in the background.
+- **Safe archive extraction.** Zip/tar/7z contents are validated against path-traversal ("zip slip") entries before anything is written to disk.
 - **Full conversion history**, browsable and exportable to CSV, so you can always answer "what did I convert, when, and did it succeed?"
 - **A real `doctor` command** that tells you exactly which optional engines (ffmpeg, LibreOffice, Pandoc, 7-Zip) are installed and what's missing, with install instructions — instead of a cryptic crash mid-conversion.
-- **Format auto-detection.** Files with missing or wrong extensions are still identified correctly via magic-byte sniffing.
+- **Format auto-detection.** Files are identified by extension, but content is also checked via magic-byte sniffing — so a file with a missing *or* wrong extension (e.g. a PNG mistakenly saved as `.txt`) still converts correctly, while formats that legitimately share a byte signature (like MP4/MOV, or WAV/AVI) aren't second-guessed.
 - **Scriptable.** The CLI has a `--json-output` mode designed for pipelines and other programs to consume.
 
 ## Supported formats
@@ -168,10 +172,15 @@ fileconverter convert ./scans -t pdf --recursive
 # With options
 fileconverter convert clip.mov -t mp4 -O bitrate=1500k -O resolution=1280x720 -O fps=30
 
-# Dry run (see what would happen, convert nothing)
+# Dry run: shows source, output path, which converter would handle each
+# file, and whether that converter's dependencies are available — writes nothing
 fileconverter convert ./docs -t pdf --recursive --dry-run
 
-# Machine-readable output for scripting
+# Automatically retry failed conversions up to 3 extra times, 2s apart
+fileconverter convert ./docs -t pdf --recursive --retry 3 --retry-delay 2
+
+# Machine-readable output for scripting (status/summary lines go to
+# stderr so stdout stays valid JSON, safe to pipe into jq or a file)
 fileconverter convert *.png -t jpg --json-output > results.json
 ```
 
@@ -182,6 +191,7 @@ fileconverter doctor                     # check installed converters & optional
 fileconverter formats                    # list every supported source -> target pairing
 fileconverter detect somefile            # detect real format via extension + magic bytes
 fileconverter watch ./drop-folder -t pdf # auto-convert new files that appear in a folder
+fileconverter retry results.json         # re-run only the failures from a previous --json-output run
 fileconverter presets list               # show built-in + custom presets
 fileconverter presets save my-preset -t jpg -O quality=75
 fileconverter presets delete my-preset
@@ -211,6 +221,28 @@ Pass options with `-O key=value` (CLI) or as a JSON object (GUI's advanced optio
 | `sheet_name` | spreadsheets (xlsx/xls/ods) | `-O sheet_name=Sheet2` |
 | `json_orient` | spreadsheets (json) | `-O json_orient=records` |
 
+## Retrying failed conversions
+
+Two ways to retry, at different scopes:
+
+**Inline, during the run** — pass `--retry N` and each failed file is automatically re-attempted up to `N` extra times (with `--retry-delay` seconds between rounds), without touching files that already succeeded:
+
+```bash
+fileconverter convert ./docs -t pdf --recursive --retry 3 --retry-delay 2
+```
+
+This is the right tool for flaky, transient failures — e.g. two LibreOffice headless instances briefly contending for the same profile lock, or ffmpeg not yet on `PATH` in a container that's still starting up.
+
+**Later, from a saved results file** — run a batch once with `--json-output` redirected to a file, then feed that file back in to retry just the failures, any time after the fact:
+
+```bash
+fileconverter convert ./docs -t pdf --recursive --json-output > results.json
+# ... later, after checking results.json or fixing whatever caused the failures ...
+fileconverter retry results.json
+```
+
+`fileconverter retry` also accepts `--retry`/`--retry-delay`/`--json-output`, and can itself be piped into another `fileconverter retry` round if some conversions are still failing — you never need to re-select the original files or reconvert anything that already succeeded.
+
 ## Presets
 
 Presets bundle a target format + option set under a name, so you don't retype the same flags every time.
@@ -234,6 +266,8 @@ fileconverter watch ~/Downloads/to-convert -t pdf
 ```
 
 Uses efficient event-based watching if `watchdog` is installed, otherwise falls back to lightweight polling (still fully functional, just checks every couple of seconds).
+
+New files are only converted once their size has stopped changing across a couple of polls, so a file that's still being copied or exported into the folder (e.g. a scanner writing a large PDF) isn't picked up mid-write and converted from a truncated/partial copy.
 
 ## Conversion history
 
@@ -265,7 +299,7 @@ Settings persist at `~/.fileconverter/config.json` and are shared between the GU
 }
 ```
 
-You generally don't need to edit this by hand — the GUI updates it automatically (theme toggle, worker count, last-used format).
+You generally don't need to edit this by hand — the GUI updates it automatically (theme toggle, worker count, last-used format). If you do hand-edit it (or it gets corrupted), each field is validated on load: anything with the wrong type or an out-of-range/invalid value (e.g. `"max_workers": "oops"` or `"theme": "purple"`) is reset to its default individually, with a warning logged to `~/.fileconverter/fileconverter.log`, rather than the app crashing or the whole file being discarded.
 
 ## Building a standalone executable
 
@@ -296,15 +330,16 @@ fileconverter/
 ├── core/                  # Front-end-agnostic engine (no GUI/CLI imports)
 │   ├── base.py             # BaseConverter contract, ConversionJob/Result
 │   ├── registry.py          # Converter plugin registry & lookup
-│   ├── engine.py             # Thread-pooled conversion engine, output verification
-│   ├── formats.py             # Extension + magic-byte format detection
-│   ├── config.py               # Persistent user settings
-│   ├── history.py               # SQLite conversion history log
-│   ├── presets.py                 # Named option-set presets
-│   ├── watcher.py                   # Folder watching (auto-convert new files)
-│   ├── checksums.py                   # Output integrity verification
-│   ├── exceptions.py                   # Structured exception hierarchy
-│   └── logging_setup.py                 # Shared logging config
+│   ├── engine.py             # Thread-pooled conversion engine, output verification, retries
+│   ├── proc_utils.py           # Killable subprocess helpers (cancellation support)
+│   ├── formats.py               # Extension + magic-byte format detection
+│   ├── config.py                  # Persistent, validated user settings
+│   ├── history.py                   # SQLite conversion history log
+│   ├── presets.py                     # Named option-set presets
+│   ├── watcher.py                       # Folder watching (auto-convert new files)
+│   ├── checksums.py                       # Output integrity verification
+│   ├── exceptions.py                        # Structured exception hierarchy
+│   └── logging_setup.py                       # Shared logging config
 ├── converters/             # One file per format family — the plugins
 │   ├── image_converter.py
 │   ├── document_converter.py
@@ -333,6 +368,7 @@ fileconverter/
 - The registry is populated by **auto-import**: `fileconverter/converters/__init__.py` discovers every `*_converter.py` file at import time. Adding a format is a one-file change (see below).
 - The GUI runs conversions on a background `QThread` so the window never freezes, with progress relayed back via Qt signals (thread-safe).
 - The CLI and GUI share 100% of the core logic — presets, history, config, and the engine itself — so behavior is always consistent between the two.
+- Converters that shell out to an external binary (ffmpeg, LibreOffice, Pandoc, Calibre) use `core/proc_utils.py`'s `run_killable`, which registers the running process with the job's cancellation token — so cancelling a job actually terminates the subprocess instead of only discarding its result once it eventually finishes.
 
 ## Adding a new format (plugin guide)
 
@@ -387,6 +423,9 @@ Download a static ffmpeg build for your OS, drop `ffmpeg`/`ffmpeg.exe` next to t
 
 **The GUI window doesn't open on Linux**
 Make sure the Qt X11/Wayland runtime libraries are present (`libxkbcommon`, `libGL`, `fontconfig`, standard X11 libs) — these are normally already present on any desktop Linux install; headless servers need them installed explicitly.
+
+**"Refusing to extract ... it would write outside the extraction directory"**
+This means an archive you tried to extract/repack contains a path-traversal ("zip slip") entry — e.g. a member named `../../etc/something` — which FileConverter refuses to extract for safety. This usually means the archive is malicious or corrupted; get a clean copy from a trusted source.
 
 **Where are my settings/history/presets stored?**
 All in `~/.fileconverter/`: `config.json`, `history.sqlite3`, `presets.json`, `fileconverter.log`.

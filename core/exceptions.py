@@ -45,3 +45,18 @@ class InvalidInputError(FileConverterError):
 
 class PresetError(FileConverterError):
     """Raised for preset load/save/validation issues."""
+
+
+class JobCancelledError(FileConverterError):
+    """Raised when a running job is cancelled by the user mid-flight.
+
+    Converters that own a subprocess don't need to raise this themselves —
+    :mod:`fileconverter.core.proc_utils` raises it automatically when a
+    registered subprocess is killed because its job was cancelled.
+    """
+
+
+class ConfigValidationError(FileConverterError):
+    """Raised when persisted config data is malformed in a way that can't
+    be safely repaired (should be rare; :mod:`fileconverter.core.config`
+    prefers to coerce bad fields to defaults rather than raise)."""

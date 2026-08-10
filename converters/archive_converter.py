@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Literal
 
 from ..core.base import BaseConverter, ConversionJob, ConversionResult, ProgressCallback
-from ..core.exceptions import MissingDependencyError
+from ..core.exceptions import ConversionFailedError, MissingDependencyError
 from ..core.registry import register
 
 _ARCHIVE_FORMATS = frozenset({"zip", "tar", "gz", "tgz", "bz2", "xz", "7z"})
@@ -38,6 +38,38 @@ _TAR_MODE_FOR_SOURCE: dict[str, _TarReadMode] = {
     "bz2": "r:bz2",
     "xz": "r:xz",
 }
+
+
+def _is_within_directory(directory: Path, target: Path) -> bool:
+    """True if ``target`` resolves to ``directory`` itself or somewhere
+    underneath it."""
+
+    try:
+        directory = directory.resolve()
+        target = target.resolve()
+    except OSError:
+        return False
+    return target == directory or directory in target.parents
+
+
+def _assert_safe_member_names(
+    names: list[str], dest_dir: Path, archive_kind: str
+) -> None:
+    """Guard against "zip slip": archive entries whose name (e.g.
+    ``../../etc/cron.d/x`` or an absolute path) would extract outside
+    ``dest_dir``. Raises :class:`ConversionFailedError` on the first
+    unsafe entry found, before anything is written to disk."""
+
+    dest_dir = dest_dir.resolve()
+    for name in names:
+        candidate = dest_dir / name
+        if not _is_within_directory(dest_dir, candidate):
+            raise ConversionFailedError(
+                f"Refusing to extract {archive_kind} entry {name!r}: it would "
+                "write outside the extraction directory. This looks like a "
+                "path-traversal ('zip slip') attempt in a malicious or "
+                "corrupted archive."
+            )
 
 
 class ArchiveConverter(BaseConverter):
@@ -76,16 +108,17 @@ class ArchiveConverter(BaseConverter):
     def _extract(self, source: Path, src_ext: str, dest_dir: Path) -> None:
         if src_ext == "zip":
             with zipfile.ZipFile(source) as zf:
+                _assert_safe_member_names(zf.namelist(), dest_dir, "zip")
                 zf.extractall(dest_dir)
         elif src_ext == "7z":
             self._extract_7z(source, dest_dir)
         elif src_ext in _TAR_MODE_FOR_SOURCE:
             mode = _TAR_MODE_FOR_SOURCE[src_ext]
             with tarfile.open(source, mode) as tf:
+                _assert_safe_member_names(tf.getnames(), dest_dir, "tar")
                 try:
                     tf.extractall(dest_dir, filter="data")
                 except TypeError:
-                    # Python < 3.12 doesn't support the `filter` kwarg.
                     tf.extractall(dest_dir)
         else:
             raise ValueError(f"Unsupported source archive format: {src_ext}")
@@ -115,6 +148,7 @@ class ArchiveConverter(BaseConverter):
                 "py7zr", "Install with: pip install py7zr"
             ) from exc
         with py7zr.SevenZipFile(source, mode="r") as archive:
+            _assert_safe_member_names(archive.getnames(), dest_dir, "7z")
             archive.extractall(path=dest_dir)
 
     def _pack_7z(self, source_dir: Path, output_path: Path) -> None:

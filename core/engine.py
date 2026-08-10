@@ -12,34 +12,63 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, Future
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Any, Callable, Optional
 
 from . import checksums, history
-from .base import ConversionJob, ConversionResult
-from .exceptions import UnsupportedConversionError
+from .base import ConversionJob, ConversionOptions, ConversionResult
+from .exceptions import JobCancelledError, UnsupportedConversionError
 from .formats import detect_format
 from .logging_setup import get_logger
+from .proc_utils import kill_process_tree
 from .registry import find_converter
 
 JobProgressCallback = Callable[[str, float, str], None]
 """Signature: callback(job_id, fraction_complete, message) -> None"""
 
 JobDoneCallback = Callable[[ConversionResult], None]
+RetryCallback = Callable[[ConversionJob, int], None]
+"""Signature: callback(job, attempt_number) -> None, called before each retry."""
 
-
-class CancelledError(Exception):
-    """Raised internally when a job is cancelled mid-flight."""
+# Kept as an alias for backwards compatibility — code (and any external
+# callers) that does ``except CancelledError`` continues to work unchanged.
+CancelledError = JobCancelledError
 
 
 class _CancellationToken:
+    """Tracks whether a job has been cancelled, and — if a converter has
+    registered a running subprocess — makes sure that subprocess actually
+    gets killed on cancel, rather than being left to run to completion."""
+
     def __init__(self) -> None:
         self._event = threading.Event()
+        self._process: Any = None
+        self._lock = threading.Lock()
 
     def cancel(self) -> None:
         self._event.set()
+        with self._lock:
+            proc = self._process
+        if proc is not None:
+            kill_process_tree(proc)
 
     def is_cancelled(self) -> bool:
         return self._event.is_set()
+
+    def register_process(self, proc: Any) -> None:
+        """Converters call this (indirectly, via the progress callback)
+        right after starting a subprocess so a subsequent ``cancel()`` can
+        kill it. If the job was already cancelled before registration
+        happens, the process is killed immediately."""
+
+        with self._lock:
+            self._process = proc
+            already_cancelled = self._event.is_set()
+        if already_cancelled:
+            kill_process_tree(proc)
+
+    def unregister_process(self) -> None:
+        with self._lock:
+            self._process = None
 
 
 class ConversionEngine:
@@ -101,9 +130,54 @@ class ConversionEngine:
         jobs: list[ConversionJob],
         on_progress: Optional[JobProgressCallback] = None,
         on_done: Optional[JobDoneCallback] = None,
+        max_retries: int = 0,
+        retry_delay: float = 1.0,
+        on_retry: Optional[RetryCallback] = None,
     ) -> list[ConversionResult]:
-        futures = [self.submit(job, on_progress, on_done) for job in jobs]
-        return [f.result() for f in futures]
+        """Run every job, then — if ``max_retries`` > 0 — automatically
+        re-run only the ones that failed, up to ``max_retries`` extra
+        attempts each, waiting ``retry_delay`` seconds between rounds.
+
+        This is what powers "retry failed only" for a batch: a transient
+        failure (a LibreOffice hiccup, a locked file, ffmpeg briefly
+        unavailable) doesn't require the caller to re-select files or
+        re-run everything that already succeeded. ``on_retry``, if given,
+        is called once per job before each retry attempt with
+        ``(job, attempt_number)``.
+
+        Returns exactly one :class:`ConversionResult` per input job (its
+        most recent attempt), in the same order as ``jobs``.
+        """
+
+        results_by_id: dict[str, ConversionResult] = {}
+        pending = list(jobs)
+        attempt = 0
+
+        while pending:
+            futures = {
+                job.job_id: self.submit(job, on_progress, on_done) for job in pending
+            }
+            for job_id, future in futures.items():
+                results_by_id[job_id] = future.result()
+
+            if attempt >= max_retries:
+                break
+
+            failed_jobs = [
+                job for job in pending if not results_by_id[job.job_id].success
+            ]
+            if not failed_jobs:
+                break
+
+            attempt += 1
+            if on_retry:
+                for job in failed_jobs:
+                    on_retry(job, attempt)
+            if retry_delay:
+                time.sleep(retry_delay)
+            pending = failed_jobs
+
+        return [results_by_id[job.job_id] for job in jobs]
 
     # ------------------------------------------------------------------
     def _run_job(
@@ -120,6 +194,17 @@ class ConversionEngine:
                 raise CancelledError("Job cancelled by user")
             if on_progress:
                 on_progress(job.job_id, fraction, message)
+
+        # Converters that shell out (video/ebook/document converters, via
+        # core.proc_utils.run_killable) look for these attributes so they
+        # can register a running subprocess for cancellation. This is the
+        # bridge between "job.cancel() was called" and "the ffmpeg/
+        # soffice/pandoc/ebook-convert process actually gets killed" —
+        # without it, cancelling only discards the result while the
+        # subprocess keeps running to completion in the background.
+        progress.register_process = token.register_process  # type: ignore[attr-defined]
+        progress.unregister_process = token.unregister_process  # type: ignore[attr-defined]
+        progress.is_cancelled = token.is_cancelled  # type: ignore[attr-defined]
 
         try:
             if not job.source_path.exists():
@@ -209,6 +294,43 @@ def build_output_path(
     directory = Path(output_dir) if output_dir else source_path.parent
     candidate = directory / f"{source_path.stem}.{target_format}"
     return _avoid_overwrite(candidate, source_path)
+
+
+def jobs_from_results_json(
+    entries: list[dict[str, Any]], only_failed: bool = True
+) -> list[ConversionJob]:
+    """Rebuild :class:`ConversionJob` objects from a previous run's
+    ``--json-output`` payload (see ``cli.main convert``).
+
+    This is what powers "resume a batch": run a big batch once with
+    ``--json-output``, save the results, then feed them back in here to
+    get jobs for just the ones that failed (``only_failed=True``, the
+    default) without re-selecting files or re-running everything that
+    already succeeded.
+    """
+
+    jobs: list[ConversionJob] = []
+    for entry in entries:
+        if only_failed and entry.get("success"):
+            continue
+        source = entry.get("source")
+        target_format = entry.get("target_format")
+        if not source or not target_format:
+            continue
+        source_path = Path(source)
+        output = entry.get("output")
+        output_path = (
+            Path(output) if output else build_output_path(source_path, target_format)
+        )
+        jobs.append(
+            ConversionJob(
+                source_path=source_path,
+                output_path=output_path,
+                target_format=target_format,
+                options=ConversionOptions(),
+            )
+        )
+    return jobs
 
 
 def _avoid_overwrite(candidate: Path, source_path: Path) -> Path:

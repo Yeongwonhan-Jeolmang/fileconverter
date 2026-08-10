@@ -9,7 +9,7 @@ from __future__ import annotations
 import json
 import sys
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 import click
 
@@ -18,11 +18,11 @@ from ..core import config as config_module
 from ..core import history as history_module
 from ..core import presets as presets_module
 from ..core.base import ConversionJob, ConversionOptions
-from ..core.engine import ConversionEngine, build_output_path
+from ..core.engine import ConversionEngine, build_output_path, jobs_from_results_json
 from ..core.exceptions import FileConverterError
 from ..core.formats import detect_format
 from ..core.logging_setup import setup_logging
-from ..core.registry import all_converters, conversion_matrix
+from ..core.registry import all_converters, conversion_matrix, find_converter
 from ..utils.paths import expand_inputs
 
 try:
@@ -40,6 +40,17 @@ def _echo(message: str) -> None:
         console.print(message)
     else:
         click.echo(message)
+
+
+def _echo_status(message: str, json_output: bool = False) -> None:
+    """Like ``_echo``, but goes to stderr when ``json_output`` is set so
+    status/summary lines never corrupt a stdout stream a caller is piping
+    into ``jq`` or a file (e.g. ``convert ... --json-output > results.json``)."""
+
+    if json_output:
+        click.echo(message, err=True)
+    else:
+        _echo(message)
 
 
 def _parse_option_kv(pairs: tuple[str, ...]) -> dict:
@@ -114,12 +125,28 @@ def cli(verbose: bool) -> None:
     help="Number of parallel conversion workers (default: from config).",
 )
 @click.option(
-    "--dry-run", is_flag=True, help="Show what would be converted without doing it."
+    "--dry-run",
+    is_flag=True,
+    help="Show what would be converted without doing it (source, output path, "
+    "converter, and availability), then exit.",
+)
+@click.option(
+    "--retry",
+    "max_retries",
+    default=0,
+    type=int,
+    help="Automatically retry failed conversions up to N extra times.",
+)
+@click.option(
+    "--retry-delay",
+    default=1.0,
+    type=float,
+    help="Seconds to wait between retry rounds (default: 1.0).",
 )
 @click.option(
     "--json-output",
     is_flag=True,
-    help="Print machine-readable JSON results (for scripting).",
+    help="Print machine-readable JSON results (for scripting; also enables 'fileconverter retry').",
 )
 def convert(
     inputs: tuple[str, ...],
@@ -130,6 +157,8 @@ def convert(
     raw_options: tuple[str, ...],
     workers: Optional[int],
     dry_run: bool,
+    max_retries: int,
+    retry_delay: float,
     json_output: bool,
 ) -> None:
     """Convert one or more files (supports globs and directories).
@@ -182,14 +211,87 @@ def convert(
     ]
 
     if dry_run:
-        for job in jobs:
-            _echo(f"[dry-run] {job.source_path}  ->  {job.output_path}")
+        _print_dry_run(jobs, target_format)
         return
 
     engine = ConversionEngine(
         max_workers=workers or cfg.max_workers, verify_output=cfg.verify_output
     )
+    _run_jobs_and_report(
+        engine,
+        jobs,
+        max_retries=max_retries,
+        retry_delay=retry_delay,
+        json_output=json_output,
+    )
+
+
+def _print_dry_run(jobs: list[ConversionJob], target_format: str) -> None:
+    """Show exactly what a real run would do — source, output path, which
+    converter would handle it, and whether that converter's dependencies
+    are actually available — without converting anything."""
+
+    availability_cache: dict[str, tuple[bool, str]] = {}
+
+    def _converter_status(src_format: str) -> tuple[str, str]:
+        converter = find_converter(src_format, target_format)
+        if converter is None:
+            return "-", "[red]no converter[/red]" if console else "NO CONVERTER"
+        available, reason = availability_cache.setdefault(
+            converter.name, converter.check_available()
+        )
+        if console:
+            status = (
+                "[green]ready[/green]"
+                if available
+                else f"[red]missing deps[/red] — {reason}"
+            )
+        else:
+            status = "READY" if available else f"MISSING DEPS ({reason})"
+        return converter.name, status
+
+    if console:
+        table = Table(title=f"Dry run — convert to '{target_format}'")
+        table.add_column("Source")
+        table.add_column("Output")
+        table.add_column("Converter")
+        table.add_column("Status")
+        for job in jobs:
+            src_format = detect_format(job.source_path)
+            converter_name, status = _converter_status(src_format)
+            table.add_row(
+                str(job.source_path), str(job.output_path), converter_name, status
+            )
+        console.print(table)
+        console.print(f"\n{len(jobs)} file(s) would be converted. Nothing was written.")
+    else:
+        for job in jobs:
+            src_format = detect_format(job.source_path)
+            converter_name, status = _converter_status(src_format)
+            click.echo(
+                f"[dry-run] {job.source_path} -> {job.output_path} "
+                f"(converter: {converter_name}, {status})"
+            )
+        click.echo(f"\n{len(jobs)} file(s) would be converted. Nothing was written.")
+
+
+def _run_jobs_and_report(
+    engine: ConversionEngine,
+    jobs: list[ConversionJob],
+    max_retries: int = 0,
+    retry_delay: float = 1.0,
+    json_output: bool = False,
+) -> None:
+    """Shared batch-running logic for ``convert`` and ``retry``: renders a
+    progress bar (or plain OK/FAILED lines), applies the retry-failed-only
+    policy, prints a summary, and exits non-zero if anything still failed
+    after retries."""
+
     results = []
+
+    def on_retry(job: ConversionJob, attempt: int) -> None:
+        if not json_output:
+            _echo(f"[retry {attempt}] {job.source_path.name} failed, retrying...")
 
     if console and not json_output:
         with Progress(
@@ -214,7 +316,14 @@ def convert(
             def on_done(result) -> None:
                 results.append(result)
 
-            engine.run_batch(jobs, on_progress=on_progress, on_done=on_done)
+            engine.run_batch(
+                jobs,
+                on_progress=on_progress,
+                on_done=on_done,
+                max_retries=max_retries,
+                retry_delay=retry_delay,
+                on_retry=on_retry,
+            )
     else:
 
         def on_done(result) -> None:
@@ -225,9 +334,20 @@ def convert(
                     f"[{status}] {result.job.source_path} -> {result.output_path or '?'}"
                 )
 
-        engine.run_batch(jobs, on_done=on_done)
+        engine.run_batch(
+            jobs,
+            on_done=on_done,
+            max_retries=max_retries,
+            retry_delay=retry_delay,
+            on_retry=on_retry,
+        )
 
     engine.shutdown(wait=True)
+
+    latest_by_id: dict[str, Any] = {}
+    for r in results:
+        latest_by_id[r.job.job_id] = r
+    final_results = list(latest_by_id.values())
 
     if json_output:
         payload = [
@@ -239,16 +359,90 @@ def convert(
                 "error": r.error,
                 "duration_seconds": r.duration_seconds,
             }
-            for r in results
+            for r in final_results
         ]
         click.echo(json.dumps(payload, indent=2))
 
-    failed = sum(1 for r in results if not r.success)
+    failed = sum(1 for r in final_results if not r.success)
     if failed:
-        _echo(f"\n{failed} of {len(results)} conversions failed.")
+        _echo_status(
+            f"\n{failed} of {len(final_results)} conversions failed.", json_output
+        )
+        if not json_output:
+            _echo(
+                "Tip: re-run with --json-output > results.json, then "
+                "'fileconverter retry results.json' to retry just the failures."
+            )
         sys.exit(1)
     else:
-        _echo(f"\nAll {len(results)} conversions succeeded.")
+        _echo_status(f"\nAll {len(final_results)} conversions succeeded.", json_output)
+
+
+@cli.command("retry")
+@click.argument("results_file", type=click.Path(exists=True, dir_okay=False))
+@click.option(
+    "--workers",
+    default=None,
+    type=int,
+    help="Number of parallel conversion workers (default: from config).",
+)
+@click.option(
+    "--retry",
+    "max_retries",
+    default=0,
+    type=int,
+    help="Automatically retry conversions that fail again, up to N extra times.",
+)
+@click.option(
+    "--retry-delay", default=1.0, type=float, help="Seconds between retry rounds."
+)
+@click.option(
+    "--json-output",
+    is_flag=True,
+    help="Print machine-readable JSON results (for scripting).",
+)
+def retry_cmd(
+    results_file: str,
+    workers: Optional[int],
+    max_retries: int,
+    retry_delay: float,
+    json_output: bool,
+) -> None:
+    """Re-run only the failed conversions from a previous run's JSON results."""
+
+    try:
+        raw = json.loads(Path(results_file).read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError) as exc:
+        raise click.ClickException(f"Could not read '{results_file}': {exc}")
+
+    if not isinstance(raw, list):
+        raise click.ClickException(
+            f"'{results_file}' doesn't look like a --json-output results file "
+            "(expected a JSON array)."
+        )
+
+    jobs = jobs_from_results_json(raw, only_failed=True)
+    if not jobs:
+        _echo_status(
+            "No failed conversions found in that results file — nothing to retry.",
+            json_output,
+        )
+        if json_output:
+            click.echo("[]")
+        return
+
+    cfg = config_module.load_config()
+    _echo_status(f"Retrying {len(jobs)} failed conversion(s)...", json_output)
+    engine = ConversionEngine(
+        max_workers=workers or cfg.max_workers, verify_output=cfg.verify_output
+    )
+    _run_jobs_and_report(
+        engine,
+        jobs,
+        max_retries=max_retries,
+        retry_delay=retry_delay,
+        json_output=json_output,
+    )
 
 
 @cli.command()
