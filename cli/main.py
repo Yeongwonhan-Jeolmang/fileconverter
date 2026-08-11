@@ -200,15 +200,38 @@ def convert(
         raise click.ClickException("No matching input files found.")
 
     out_dir = Path(output_dir) if output_dir else None
-    jobs = [
-        ConversionJob(
-            source_path=f,
-            output_path=build_output_path(f, target_format, out_dir),
-            target_format=target_format,
-            options=ConversionOptions.from_dict(options_dict),
+    overwrite_policy = (
+        "rename" if cfg.overwrite_policy == "ask" else cfg.overwrite_policy
+    )
+
+    jobs: list[ConversionJob] = []
+    skipped: list[Path] = []
+    for f in files:
+        output_path = build_output_path(
+            f, target_format, out_dir, overwrite_policy=overwrite_policy
         )
-        for f in files
-    ]
+        if output_path is None:
+            skipped.append(f)
+            continue
+        jobs.append(
+            ConversionJob(
+                source_path=f,
+                output_path=output_path,
+                target_format=target_format,
+                options=ConversionOptions.from_dict(options_dict),
+            )
+        )
+
+    if skipped:
+        _echo(
+            f"Skipped {len(skipped)} file(s) whose output already exists "
+            f"(overwrite_policy='{cfg.overwrite_policy}')."
+        )
+
+    if not jobs:
+        raise click.ClickException(
+            "Nothing left to convert after applying overwrite_policy."
+        )
 
     if dry_run:
         _print_dry_run(jobs, target_format)

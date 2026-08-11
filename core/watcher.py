@@ -8,7 +8,6 @@ works with zero extra dependencies installed.
 from __future__ import annotations
 
 import threading
-import time
 from pathlib import Path
 from typing import Callable, Optional
 
@@ -38,6 +37,7 @@ class FolderWatcher:
         poll_interval: float = 2.0,
         on_new_job: Optional[FileHandlerCallback] = None,
         settle_checks: int = 2,
+        overwrite_policy: str = "rename",
     ):
         self.folder = Path(folder)
         self.target_format = target_format.lower().lstrip(".")
@@ -46,6 +46,9 @@ class FolderWatcher:
         self.output_dir = Path(output_dir) if output_dir else None
         self.poll_interval = poll_interval
         self.on_new_job = on_new_job
+        self.overwrite_policy = (
+            "rename" if overwrite_policy == "ask" else overwrite_policy
+        )
         self.settle_checks = max(1, settle_checks)
 
         self._seen: set[str] = set()
@@ -118,7 +121,15 @@ class FolderWatcher:
         return streak >= self.settle_checks
 
     def _dispatch(self, path: Path) -> None:
-        output_path = build_output_path(path, self.target_format, self.output_dir)
+        output_path = build_output_path(
+            path,
+            self.target_format,
+            self.output_dir,
+            overwrite_policy=self.overwrite_policy,
+        )
+        if output_path is None:
+            # overwrite_policy == "skip" and the output already exists.
+            return
         job = ConversionJob(
             source_path=path,
             output_path=output_path,

@@ -6,9 +6,11 @@
 [![Code style: black](https://img.shields.io/badge/code%20style-black-000000.svg)](https://github.com/psf/black)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
 
-A file conversion toolkit with both a **GUI** (primary) and a **CLI**. Convert images, documents, spreadsheets, audio, video, and archives.
+**Images. Documents. Spreadsheets. Audio. Video. Archives. One tool.**
 
-Runs on Windows, macOS, and Linux. Works as a normal Python package, or as a **standalone executable** you can hand to someone who has never installed Python.
+FileConverter is a modular, conversion toolkit with a **GUI** (primary) and a **CLI** built on the exact same engine — nothing is uploaded anywhere, ever. Point it at a file, a folder, or a hundred of both, and it just works, with real batch processing, retries, cancellation, and a full history log to back it up.
+
+Runs on Windows, macOS, and Linux. Works as a normal Python package, or as a **standalone executable** for people who've never installed Python in their life.
 
 ---
 
@@ -141,12 +143,50 @@ pip install -r requirements-cli.txt  # a light CLI-only starter set
 
 Launch with `python -m fileconverter` (GUI is the default) or `fileconverter-gui`.
 
-1. **Drag & drop** files or whole folders onto the drop zone, or use **Add Files** / **Add Folder**.
-2. Each row gets its detected source format and a **target format dropdown** pre-filled with every format it can legally convert to.
-3. Optionally set an **output directory** (default: alongside each source file) and the number of parallel **workers**.
-4. Optionally type advanced, per-batch options as JSON, e.g. `{"quality": 85, "bitrate": "192k"}` — see [Converter options reference](#converter-options-reference).
-5. Click **Convert All**. Each row shows live progress and a final status.
-6. Use the **Tools** menu for dependency checks (**Doctor**), **Conversion History**, and **Manage Presets**. Use **View → Toggle Dark / Light Theme** to switch themes (saved automatically).
+### Building the queue
+
+Add files three ways: drag & drop onto the drop zone *or* directly onto the queue table itself, **Add Files**, or **Add Folder** (recursive). Each row gets its detected source format and a target-format dropdown pre-filled with every format it can legally convert to. Dropping a file that's already queued is silently skipped rather than duplicated, and the status bar tells you when that happens.
+
+### Working the queue
+
+| Action | How |
+|---|---|
+| Set one row's target format | Its dropdown, in the row |
+| Set several rows' target format at once | Select rows → pick a format in the toolbar combo → **Apply** |
+| Remove a row | Its **✕** button, right-click → Remove, or select + `Delete` |
+| Cancel a row mid-conversion | Right-click → Cancel (kills the underlying ffmpeg/LibreOffice/Pandoc/Calibre process — see [Why this converter](#why-this-converter)) |
+| Open a finished file / its folder | Right-click a completed row → Open Output File / Show in Folder |
+| Find a row in a long queue | The **Filter** box, top right — matches by filename as you type |
+| Apply a preset to selected rows | **Tools → Manage Presets** → select one → Apply to Selected Rows |
+
+The queue survives closing and reopening the app: on quit, every row's source file and chosen target format is saved, and restored automatically next launch (files that were moved or deleted in the meantime are silently dropped).
+
+### Converting
+
+Optionally set an **output directory** (default: alongside each source file) and the number of parallel **workers**, plus advanced per-batch options as JSON — e.g. `{"quality": 85, "bitrate": "192k"}` — see [Converter options reference](#converter-options-reference).
+
+Click **Convert All** (or `Ctrl+Return`). Each row shows live progress and a final status; an overall progress bar tracks the whole batch. Click **Cancel** at any point to stop everything still running — cancelled jobs are reported as `Cancelled`, not a generic failure.
+
+If a conversion's output file already exists, what happens depends on your **overwrite policy** (Preferences, below): overwrite it, skip it, auto-rename the new one, or — the default — ask. "Ask" shows one dialog covering every conflict in the batch, so a hundred pre-existing files don't mean a hundred pop-ups.
+
+### Tools and preferences
+
+- **Tools → Check Dependencies (Doctor)** — a sortable table of every converter and whether its dependencies are installed.
+- **Tools → Conversion History** — sortable, exportable to CSV, clearable, straight from the same log the CLI reads.
+- **Tools → Manage Presets** — browse built-in and custom presets, apply one to your current selection, or delete a custom one.
+- **Tools → Preferences** (`Ctrl+,`) — the single place for every persisted setting: theme, worker count, default output directory, overwrite policy, metadata preservation, and output verification.
+- **View → Theme** — Dark, Light, or Follow System (resolved from your OS's color scheme where Qt supports it).
+
+### Keyboard shortcuts
+
+| Shortcut | Action |
+|---|---|
+| `Ctrl+O` | Add Files |
+| `Ctrl+Shift+O` | Add Folder |
+| `Delete` | Remove selected rows |
+| `Ctrl+Return` | Convert All |
+| `Ctrl+,` | Preferences |
+| `Ctrl+Q` | Quit |
 
 ## Using the CLI
 
@@ -354,8 +394,8 @@ fileconverter/
 │   └── contact_calendar_converter.py
 ├── gui/                    # PySide6 desktop front-end
 │   ├── app.py               # Main window
-│   ├── theme.py               # Dark/light QSS stylesheets
-│   └── widgets/                 # DropArea, QueueTable
+│   ├── theme.py               # Dark/light QSS stylesheets + system theme resolution
+│   └── widgets/                 # DropArea, QueueTable, and the Doctor/History/Presets/Preferences dialogs
 ├── cli/                    # Click-based command-line front-end
 │   └── main.py
 └── utils/                  # Small shared helpers (glob/dir expansion)
@@ -369,6 +409,7 @@ fileconverter/
 - The GUI runs conversions on a background `QThread` so the window never freezes, with progress relayed back via Qt signals (thread-safe).
 - The CLI and GUI share 100% of the core logic — presets, history, config, and the engine itself — so behavior is always consistent between the two.
 - Converters that shell out to an external binary (ffmpeg, LibreOffice, Pandoc, Calibre) use `core/proc_utils.py`'s `run_killable`, which registers the running process with the job's cancellation token — so cancelling a job actually terminates the subprocess instead of only discarding its result once it eventually finishes.
+- The GUI's queue table identifies rows by a stable ID, not their on-screen position — so removing, cancelling, or updating progress on any row keeps working correctly no matter how many other rows have been added or removed around it.
 
 ## Adding a new format (plugin guide)
 

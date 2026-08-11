@@ -137,16 +137,6 @@ class ConversionEngine:
         """Run every job, then — if ``max_retries`` > 0 — automatically
         re-run only the ones that failed, up to ``max_retries`` extra
         attempts each, waiting ``retry_delay`` seconds between rounds.
-
-        This is what powers "retry failed only" for a batch: a transient
-        failure (a LibreOffice hiccup, a locked file, ffmpeg briefly
-        unavailable) doesn't require the caller to re-select files or
-        re-run everything that already succeeded. ``on_retry``, if given,
-        is called once per job before each retry attempt with
-        ``(job, attempt_number)``.
-
-        Returns exactly one :class:`ConversionResult` per input job (its
-        most recent attempt), in the same order as ``jobs``.
         """
 
         results_by_id: dict[str, ConversionResult] = {}
@@ -283,17 +273,54 @@ class ConversionEngine:
             )
 
 
+_OVERWRITE_POLICIES = frozenset({"ask", "overwrite", "skip", "rename"})
+
+
 def build_output_path(
-    source_path: Path, target_format: str, output_dir: Optional[Path] = None
-) -> Path:
+    source_path: Path,
+    target_format: str,
+    output_dir: Optional[Path] = None,
+    overwrite_policy: str = "rename",
+) -> Optional[Path]:
     """Compute a sensible output path: same stem, new extension, in
-    ``output_dir`` if given, else alongside the source file."""
+    ``output_dir`` if given, else alongside the source file.
+    """
 
     source_path = Path(source_path)
     target_format = target_format.lower().lstrip(".")
     directory = Path(output_dir) if output_dir else source_path.parent
     candidate = directory / f"{source_path.stem}.{target_format}"
+
+    same_as_source = candidate.resolve() == source_path.resolve()
+    conflict = same_as_source or candidate.exists()
+
+    if not conflict:
+        return candidate
+    if overwrite_policy == "overwrite" and not same_as_source:
+        return candidate
+    if overwrite_policy == "skip":
+        return None
+    # "rename", "ask" (unresolved), and "overwrite" when the candidate *is*
+    # the source file all fall back to the safe, non-destructive default.
     return _avoid_overwrite(candidate, source_path)
+
+
+def output_conflict(
+    source_path: Path, target_format: str, output_dir: Optional[Path] = None
+) -> Optional[Path]:
+    """Return the output path a plain conversion *would* land on if it
+    already exists (or would collide with the source file itself), else
+    ``None``. Used by front ends to decide whether an ``overwrite_policy ==
+    "ask"`` conflict-resolution prompt is actually needed for a given file,
+    without committing to a rename/overwrite/skip decision yet."""
+
+    source_path = Path(source_path)
+    target_format = target_format.lower().lstrip(".")
+    directory = Path(output_dir) if output_dir else source_path.parent
+    candidate = directory / f"{source_path.stem}.{target_format}"
+    if candidate.resolve() == source_path.resolve() or candidate.exists():
+        return candidate
+    return None
 
 
 def jobs_from_results_json(
@@ -301,12 +328,6 @@ def jobs_from_results_json(
 ) -> list[ConversionJob]:
     """Rebuild :class:`ConversionJob` objects from a previous run's
     ``--json-output`` payload (see ``cli.main convert``).
-
-    This is what powers "resume a batch": run a big batch once with
-    ``--json-output``, save the results, then feed them back in here to
-    get jobs for just the ones that failed (``only_failed=True``, the
-    default) without re-selecting files or re-running everything that
-    already succeeded.
     """
 
     jobs: list[ConversionJob] = []
@@ -322,6 +343,8 @@ def jobs_from_results_json(
         output_path = (
             Path(output) if output else build_output_path(source_path, target_format)
         )
+        if output_path is None:
+            continue
         jobs.append(
             ConversionJob(
                 source_path=source_path,

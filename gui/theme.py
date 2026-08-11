@@ -6,6 +6,8 @@ extra dependencies beyond PySide6 itself. (ALL CREDITS FOR THIS FILE GO TO FLORI
 
 from __future__ import annotations
 
+from PySide6.QtGui import QGuiApplication
+
 DARK_QSS = """
 QWidget {
     background-color: #1e1f26;
@@ -156,3 +158,32 @@ QStatusBar { background-color: #eef0f7; color: #5c5e70; }
 
 def stylesheet_for(theme: str) -> str:
     return LIGHT_QSS if theme == "light" else DARK_QSS
+
+
+def resolve_theme(theme: str) -> str:
+    """Resolve a config theme value to a concrete ``"dark"``/``"light"``.
+    """
+
+    if theme == "light":
+        return "light"
+    if theme != "system":
+        return "dark"
+
+    app = QGuiApplication.instance()
+    if app is None:
+        return "dark"
+    style_hints = QGuiApplication.styleHints()
+    color_scheme = getattr(style_hints, "colorScheme", None)
+    if color_scheme is None:
+        return "dark"
+    try:
+        from PySide6.QtCore import Qt
+
+        scheme = color_scheme()
+        if scheme == Qt.ColorScheme.Light:
+            return "light"
+        if scheme == Qt.ColorScheme.Dark:
+            return "dark"
+    except Exception:
+        pass
+    return "dark"
