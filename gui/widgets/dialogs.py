@@ -66,9 +66,12 @@ class DoctorDialog(QDialog):
         self.table = _make_table(["Converter", "Formats", "Status"])
         layout.addWidget(self.table)
 
+        # Sorting must be off while filling: with it on, Qt re-sorts after
+        # every setItem() and later cells land in the wrong (or no) row.
+        self.table.setSortingEnabled(False)
         self.table.setRowCount(0)
         for conv in sorted(all_converters(), key=lambda c: c.name):
-            available, reason = conv.check_available()
+            available, reason = conv.safe_check_available()
             row = self.table.rowCount()
             self.table.insertRow(row)
             self.table.setItem(row, 0, QTableWidgetItem(conv.name))
@@ -82,6 +85,7 @@ class DoctorDialog(QDialog):
                 Qt.GlobalColor.green if available else Qt.GlobalColor.red
             )
             self.table.setItem(row, 2, status_item)
+        self.table.setSortingEnabled(True)
 
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
         buttons.rejected.connect(self.reject)

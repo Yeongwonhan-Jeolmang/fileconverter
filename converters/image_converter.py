@@ -40,7 +40,7 @@ def _try_register_heif() -> None:
         import pillow_heif  # type: ignore
 
         pillow_heif.register_heif_opener()
-    except ImportError:
+    except (ImportError, OSError):  # not installed, or its native library is missing
         pass
 
 

@@ -128,6 +128,17 @@ class BaseConverter:
 
         return True, "OK"
 
+    def safe_check_available(self) -> tuple[bool, str]:
+        """:meth:`check_available`, but never raises. Optional dependencies
+        can fail in unexpected ways when imported (e.g. a native library
+        missing -> ``OSError``), and one broken converter must not crash
+        the Doctor dialog or the CLI."""
+
+        try:
+            return self.check_available()
+        except Exception as exc:  # noqa: BLE001
+            return False, f"Dependency check failed: {type(exc).__name__}: {exc}"
+
     def convert(
         self, job: ConversionJob, progress_cb: ProgressCallback = None
     ) -> ConversionResult:

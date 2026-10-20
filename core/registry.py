@@ -42,10 +42,7 @@ def find_converter(src_format: str, dst_format: str) -> BaseConverter | None:
     matches = find_converters(src_format, dst_format)
     if len(matches) > 1:
         for converter in matches:
-            try:
-                available, _reason = converter.check_available()
-            except Exception:  # noqa: BLE001
-                available = False
+            available, _reason = converter.safe_check_available()
             if available:
                 return converter
     return matches[0] if matches else None

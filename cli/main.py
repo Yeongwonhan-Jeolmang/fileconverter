@@ -281,7 +281,7 @@ def _print_dry_run(jobs: list[ConversionJob], target_format: str) -> None:
         if converter is None:
             return "-", "[red]no converter[/red]" if console else "NO CONVERTER"
         available, reason = availability_cache.setdefault(
-            converter.name, converter.check_available()
+            converter.name, converter.safe_check_available()
         )
         if console:
             status = (
@@ -614,7 +614,7 @@ def doctor() -> None:
         table.add_column("Formats")
         table.add_column("Status")
         for conv in all_converters():
-            available, reason = conv.check_available()
+            available, reason = conv.safe_check_available()
             status = (
                 "[green]Available[/green]"
                 if available
@@ -625,7 +625,7 @@ def doctor() -> None:
         console.print(table)
     else:
         for conv in all_converters():
-            available, reason = conv.check_available()
+            available, reason = conv.safe_check_available()
             click.echo(f"{conv.name}: {'OK' if available else 'MISSING'} ({reason})")
 
 

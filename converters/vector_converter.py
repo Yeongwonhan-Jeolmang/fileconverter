@@ -18,6 +18,13 @@ from ..core.registry import register
 
 _RASTER_FROM_SVG = frozenset({"png", "pdf"})
 _INPUT_FORMATS = frozenset({"svg", "dxf"})
+
+_CAIRO_MISSING_HINT = (
+    "cairosvg is installed but the native Cairo library (libcairo-2) was not "
+    "found. On Windows, install the GTK runtime (e.g. "
+    "https://github.com/tschoonj/GTK-for-Windows-Runtime-Environment-Installer) "
+    "and restart; on macOS: brew install cairo; on Linux: install libcairo2."
+)
 _OUTPUT_FORMATS = frozenset({"png", "pdf", "svg"})
 
 
@@ -45,6 +52,10 @@ class VectorConverter(BaseConverter):
             import cairosvg  # noqa: F401
         except ImportError:
             missing.append("cairosvg")
+        except OSError:
+            # The pip package is installed but the native Cairo library it
+            # loads at import time isn't (common on Windows).
+            return False, _CAIRO_MISSING_HINT
         try:
             import ezdxf  # noqa: F401
         except ImportError:
@@ -91,6 +102,8 @@ class VectorConverter(BaseConverter):
             raise MissingDependencyError(
                 "cairosvg", "Install with: pip install cairosvg"
             ) from exc
+        except OSError as exc:
+            raise MissingDependencyError("Cairo library", _CAIRO_MISSING_HINT) from exc
 
         scale = float(options.get("scale") or 1.0)
         kwargs: dict = {"scale": scale}
