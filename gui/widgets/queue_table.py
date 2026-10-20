@@ -19,7 +19,6 @@ from PySide6.QtWidgets import (
     QAbstractItemView,
     QComboBox,
     QHeaderView,
-    QMenu,
     QProgressBar,
     QPushButton,
     QTableWidget,
@@ -28,6 +27,7 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import QUrl
 
 from ...core.formats import detect_format
+from .menus import AutoSizeMenu
 from ...core.registry import supported_targets
 
 COLUMNS = ["File", "Source Format", "Target Format", "Progress", "Status", ""]
@@ -339,7 +339,7 @@ class QueueTable(QTableWidget):
             self.selectRow(index.row())
 
         selected = self.selected_row_ids()
-        menu = QMenu(self)
+        menu = AutoSizeMenu("", self)
 
         if any(self.is_active(rid) for rid in selected):
             cancel_action = menu.addAction("Cancel")

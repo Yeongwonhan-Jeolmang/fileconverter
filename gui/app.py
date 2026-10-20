@@ -22,7 +22,6 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QMainWindow,
-    QMenu,
     QMessageBox,
     QPlainTextEdit,
     QProgressBar,
@@ -48,6 +47,7 @@ from .widgets.dialogs import (
     PresetsDialog,
 )
 from .widgets.drop_area import DropArea
+from .widgets.menus import AutoSizeMenu
 from .widgets.queue_table import STATUS_DONE, QueueTable
 
 
@@ -228,7 +228,7 @@ class MainWindow(QMainWindow):
     def _build_menu(self) -> None:
         menu_bar = self.menuBar()
 
-        file_menu = QMenu("File", self)
+        file_menu = AutoSizeMenu("&File", self)
         file_menu.addAction(
             self._make_action("Add Files\u2026", self._on_add_files, "Ctrl+O")
         )
@@ -239,7 +239,7 @@ class MainWindow(QMainWindow):
         file_menu.addAction(self._make_action("Exit", self.close, "Ctrl+Q"))
         menu_bar.addMenu(file_menu)
 
-        edit_menu = QMenu("Edit", self)
+        edit_menu = AutoSizeMenu("&Edit", self)
         edit_menu.addAction(
             self._make_action(
                 "Remove Selected", self.queue_table.remove_selected_rows, "Delete"
@@ -248,7 +248,7 @@ class MainWindow(QMainWindow):
         edit_menu.addAction(self._make_action("Clear Queue", self._on_clear_queue))
         menu_bar.addMenu(edit_menu)
 
-        tools_menu = QMenu("Tools", self)
+        tools_menu = AutoSizeMenu("&Tools", self)
         tools_menu.addAction(
             self._make_action("Check Dependencies (Doctor)", self._show_doctor)
         )
@@ -264,8 +264,8 @@ class MainWindow(QMainWindow):
         )
         menu_bar.addMenu(tools_menu)
 
-        view_menu = QMenu("View", self)
-        theme_menu = QMenu("Theme", self)
+        view_menu = AutoSizeMenu("&View", self)
+        theme_menu = AutoSizeMenu("Theme", view_menu)
         self._theme_group = QActionGroup(self)
         self._theme_group.setExclusive(True)
         self._theme_actions: dict[str, QAction] = {}
@@ -284,7 +284,7 @@ class MainWindow(QMainWindow):
         view_menu.addMenu(theme_menu)
         menu_bar.addMenu(view_menu)
 
-        help_menu = QMenu("Help", self)
+        help_menu = AutoSizeMenu("&Help", self)
         help_menu.addAction(self._make_action("About FileConverter", self._show_about))
         menu_bar.addMenu(help_menu)
 
