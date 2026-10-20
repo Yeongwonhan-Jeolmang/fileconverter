@@ -1,98 +1,97 @@
-"""Audio conversion via pydub (wraps the ffmpeg/avconv binary).
+"""Audio conversion by driving the ffmpeg binary directly.
 
-Requires an ffmpeg (or libav) binary on PATH — this is checked explicitly
-and reported with a clear, actionable error rather than a cryptic
-subprocess failure.
+This used to go through ``pydub``, which (a) no longer imports on Python
+3.13+ (it relies on the removed ``audioop`` module), (b) decodes the whole
+file into memory, and (c) passed the file extension straight to ffmpeg's
+``-f`` flag, which broke AAC and WMA output (ffmpeg calls those muxers
+``adts`` and ``asf``). Calling ffmpeg ourselves fixes all three and also
+gives audio jobs real progress reporting and cancellation.
+
+Options:
+  - bitrate: str — e.g. "192k"
+  - sample_rate: int — e.g. 44100
+  - channels: int — 1 (mono) or 2 (stereo)
+  - gain_db: float — volume adjustment in decibels, e.g. -3 or 6
+  - audio_codec: str — override ffmpeg's default codec, e.g. "libopus"
 """
 
 from __future__ import annotations
 
-import shutil
-from typing import cast
-
 from ..core.base import BaseConverter, ConversionJob, ConversionResult, ProgressCallback
-from ..core.exceptions import MissingDependencyError
+from ..core.ffmpeg_utils import FFMPEG_INSTALL_HINT, find_ffmpeg, require_ffmpeg, run_ffmpeg
 from ..core.registry import register
 
-_AUDIO_FORMATS = frozenset({"mp3", "wav", "ogg", "flac", "aac", "m4a", "wma", "aiff"})
+_AUDIO_FORMATS = frozenset({"mp3", "wav", "ogg", "flac", "aac", "m4a", "wma", "aiff", "opus"})
+
+# Target extension -> ffmpeg muxer name (they don't always match).
+_MUXER_FOR_TARGET = {
+    "mp3": "mp3",
+    "wav": "wav",
+    "ogg": "ogg",
+    "flac": "flac",
+    "aac": "adts",
+    "m4a": "ipod",
+    "wma": "asf",
+    "aiff": "aiff",
+    "opus": "opus",
+}
 
 
-def _ffmpeg_available() -> bool:
-    return shutil.which("ffmpeg") is not None
+def build_audio_args(target: str, options) -> list[str]:
+    """ffmpeg output arguments shared by audio conversion and video -> audio
+    extraction."""
+
+    args = ["-vn"]  # drop cover art / video streams
+    # ffmpeg picks a sensible default codec per container (libmp3lame for
+    # mp3, aac for m4a, ...); "audio_codec" lets the user override it.
+    codec = options.get("audio_codec")
+    if codec:
+        args += ["-c:a", str(codec)]
+    bitrate = options.get("bitrate")
+    if bitrate:
+        args += ["-b:a", str(bitrate)]
+    sample_rate = options.get("sample_rate")
+    if sample_rate:
+        args += ["-ar", str(int(sample_rate))]
+    channels = options.get("channels")
+    if channels:
+        args += ["-ac", str(int(channels))]
+    gain_db = options.get("gain_db")
+    if gain_db:
+        args += ["-af", f"volume={float(gain_db)}dB"]
+    muxer = _MUXER_FOR_TARGET.get(target)
+    if muxer:
+        args += ["-f", muxer]
+    return args
 
 
 class AudioConverter(BaseConverter):
     name = "Audio Converter"
-    description = "Converts between MP3, WAV, OGG, FLAC, AAC, M4A, WMA, AIFF. Requires ffmpeg on PATH."
+    description = (
+        "Converts between MP3, WAV, OGG, OPUS, FLAC, AAC, M4A, WMA, AIFF. "
+        "Requires ffmpeg on PATH."
+    )
     input_formats = _AUDIO_FORMATS
     output_formats = _AUDIO_FORMATS
 
     def check_available(self) -> tuple[bool, str]:
-        if not _ffmpeg_available():
-            return (
-                False,
-                "ffmpeg not found on PATH. Install from https://ffmpeg.org/download.html",
-            )
-        try:
-            import pydub  # noqa: F401
-        except ImportError:
-            return False, "Install with: pip install pydub"
+        if find_ffmpeg() is None:
+            return False, f"ffmpeg not found on PATH. {FFMPEG_INSTALL_HINT}"
         return True, "OK"
 
     def convert(
         self, job: ConversionJob, progress_cb: ProgressCallback = None
     ) -> ConversionResult:
         def _do() -> None:
-            if not _ffmpeg_available():
-                raise MissingDependencyError(
-                    "ffmpeg",
-                    "Install from https://ffmpeg.org/download.html and ensure it is on PATH.",
-                )
-            try:
-                from pydub import AudioSegment
-            except ImportError as exc:
-                raise MissingDependencyError(
-                    "pydub", "Install with: pip install pydub"
-                ) from exc
-
-            src_ext = job.source_path.suffix.lower().lstrip(".")
+            ffmpeg = require_ffmpeg()
             target = job.target_format.lower().lstrip(".")
-            options = job.options
+            cmd = [ffmpeg, "-hide_banner", "-y", "-i", str(job.source_path)]
+            cmd += build_audio_args(target, job.options)
+            cmd.append(str(job.output_path))
 
             if progress_cb:
-                progress_cb(0.1, "Decoding audio")
-
-            audio_format = "m4a" if src_ext == "m4a" else src_ext
-            segment = cast(
-                AudioSegment,
-                AudioSegment.from_file(job.source_path, format=audio_format),
-            )
-
-            sample_rate = options.get("sample_rate")
-            if sample_rate:
-                segment = segment.set_frame_rate(int(sample_rate))
-
-            channels = options.get("channels")
-            if channels:
-                segment = segment.set_channels(int(channels))
-
-            gain_db = options.get("gain_db")
-            if gain_db:
-                segment = segment.apply_gain(float(gain_db))
-
-            export_kwargs: dict = {}
-            bitrate = options.get("bitrate")
-            if bitrate:
-                export_kwargs["bitrate"] = str(bitrate)
-
-            if progress_cb:
-                progress_cb(0.6, "Encoding output")
-
-            export_format = "mp4" if target == "m4a" else target
-            segment.export(job.output_path, format=export_format, **export_kwargs)
-
-            if progress_cb:
-                progress_cb(0.95, "Done")
+                progress_cb(0.1, "Encoding audio")
+            run_ffmpeg(cmd, progress_cb)
 
         return self._run_timed(job, _do)
 

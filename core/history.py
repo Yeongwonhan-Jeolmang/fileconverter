@@ -7,11 +7,13 @@ browsable history and the CLI can export it (``fileconverter history``).
 from __future__ import annotations
 
 import csv
+import datetime
 import sqlite3
 import time
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
+from typing import Iterator, Optional
 
 from .config import CONFIG_DIR
 
@@ -45,13 +47,23 @@ class HistoryEntry:
     error: Optional[str]
 
 
-def _connect() -> sqlite3.Connection:
+@contextmanager
+def _connect() -> Iterator[sqlite3.Connection]:
+    """Open the history DB, commit on success / roll back on error, and
+    always close the connection. (``with sqlite3.connect(...)`` alone only
+    manages the transaction — it never closes the connection, which leaked
+    one file handle per recorded conversion.)"""
+
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(HISTORY_DB, timeout=30.0)
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA busy_timeout=30000")
-    conn.execute(_SCHEMA)
-    return conn
+    try:
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA busy_timeout=30000")
+        conn.execute(_SCHEMA)
+        with conn:
+            yield conn
+    finally:
+        conn.close()
 
 
 def record(
@@ -85,7 +97,10 @@ def record(
 def recent(limit: int = 100) -> list[HistoryEntry]:
     with _connect() as conn:
         rows = conn.execute(
-            "SELECT * FROM history ORDER BY timestamp DESC LIMIT ?", (limit,)
+            "SELECT id, timestamp, source_path, output_path, source_format, "
+            "target_format, success, duration_seconds, error "
+            "FROM history ORDER BY timestamp DESC, id DESC LIMIT ?",
+            (limit,),
         ).fetchall()
     return [
         HistoryEntry(
@@ -128,7 +143,9 @@ def export_csv(path: str | Path, limit: int = 10_000) -> Path:
         for e in entries:
             writer.writerow(
                 [
-                    e.timestamp,
+                    datetime.datetime.fromtimestamp(e.timestamp).isoformat(
+                        sep=" ", timespec="seconds"
+                    ),
                     e.source_path,
                     e.output_path,
                     e.source_format,

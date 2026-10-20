@@ -13,6 +13,7 @@ from typing import Any, Optional
 
 import click
 
+from .. import __version__
 from .. import converters  # noqa: F401 — side effect: registers all converters
 from ..core import config as config_module
 from ..core import history as history_module
@@ -20,9 +21,14 @@ from ..core import presets as presets_module
 from ..core.base import ConversionJob, ConversionOptions
 from ..core.engine import ConversionEngine, build_output_path, jobs_from_results_json
 from ..core.exceptions import FileConverterError
-from ..core.formats import detect_format
+from ..core.formats import FOLDER_FORMAT, detect_format
 from ..core.logging_setup import setup_logging
-from ..core.registry import all_converters, conversion_matrix, find_converter
+from ..core.registry import (
+    all_converters,
+    conversion_matrix,
+    find_converter,
+    supported_targets,
+)
 from ..utils.paths import expand_inputs
 
 try:
@@ -79,9 +85,12 @@ def _coerce(value: str):
     return value
 
 
-@click.group()
+@click.group(context_settings={"help_option_names": ["-h", "--help"]})
 @click.option("--verbose", is_flag=True, help="Enable verbose logging to stderr.")
-@click.version_option(package_name="fileconverter")
+# An explicit version (rather than package_name=...) also works when run
+# from a source checkout or a PyInstaller build, where package metadata
+# isn't installed and click would raise instead of printing the version.
+@click.version_option(version=__version__, prog_name="fileconverter")
 def cli(verbose: bool) -> None:
     """FileConverter — convert images, documents, spreadsheets, audio,
     video, and archives from the command line."""
@@ -190,9 +199,18 @@ def convert(
         raise click.ClickException(
             "Target format required: pass -t/--to, or --preset with a preset that defines one."
         )
+    target_format = target_format.strip().lower().lstrip(".")
+    # The config's metadata preference applies unless the user overrides it
+    # per run (-O preserve_metadata=false) or via a preset.
+    options_dict.setdefault("preserve_metadata", cfg.preserve_metadata)
 
+    # Converting a directory *to an archive format* means "compress this
+    # folder", not "convert every file inside it to .zip one by one".
+    compress_folders = target_format in supported_targets(FOLDER_FORMAT)
     try:
-        files = expand_inputs(list(inputs), recursive=recursive)
+        files = expand_inputs(
+            list(inputs), recursive=recursive, keep_dirs=compress_folders
+        )
     except FileNotFoundError as exc:
         raise click.ClickException(str(exc))
 
@@ -206,9 +224,10 @@ def convert(
 
     jobs: list[ConversionJob] = []
     skipped: list[Path] = []
+    reserved: set[Path] = set()  # outputs already claimed by earlier jobs in this batch
     for f in files:
         output_path = build_output_path(
-            f, target_format, out_dir, overwrite_policy=overwrite_policy
+            f, target_format, out_dir, overwrite_policy=overwrite_policy, reserved=reserved
         )
         if output_path is None:
             skipped.append(f)
@@ -223,9 +242,10 @@ def convert(
         )
 
     if skipped:
-        _echo(
+        _echo_status(
             f"Skipped {len(skipped)} file(s) whose output already exists "
-            f"(overwrite_policy='{cfg.overwrite_policy}')."
+            f"(overwrite_policy='{cfg.overwrite_policy}').",
+            json_output,
         )
 
     if not jobs:
@@ -312,6 +332,28 @@ def _run_jobs_and_report(
 
     results = []
 
+    try:
+        _run_batch_with_ui(engine, jobs, results, max_retries, retry_delay, json_output)
+    except KeyboardInterrupt:
+        # Without this, Ctrl+C left worker threads (and any ffmpeg /
+        # LibreOffice child processes) running after the CLI "exited".
+        _echo_status("\nInterrupted — cancelling running conversions...", json_output)
+        engine.cancel_all()
+        engine.shutdown(wait=True)
+        sys.exit(130)
+
+    engine.shutdown(wait=True)
+    _report_results(results, json_output)
+
+
+def _run_batch_with_ui(
+    engine: ConversionEngine,
+    jobs: list[ConversionJob],
+    results: list,
+    max_retries: int,
+    retry_delay: float,
+    json_output: bool,
+) -> None:
     def on_retry(job: ConversionJob, attempt: int) -> None:
         if not json_output:
             _echo(f"[retry {attempt}] {job.source_path.name} failed, retrying...")
@@ -329,11 +371,13 @@ def _run_jobs_and_report(
                 for job in jobs
             }
 
+            names = {job.job_id: job.source_path.name for job in jobs}
+
             def on_progress(job_id: str, fraction: float, message: str) -> None:
                 progress_ui.update(
                     task_ids[job_id],
                     completed=fraction * 100,
-                    description=f"{Path(job_id.split('->')[0]).name}: {message}",
+                    description=f"{names[job_id]}: {message}",
                 )
 
             def on_done(result) -> None:
@@ -351,11 +395,12 @@ def _run_jobs_and_report(
 
         def on_done(result) -> None:
             results.append(result)
-            status = "OK" if result.success else "FAILED"
-            if not json_output:
-                _echo(
-                    f"[{status}] {result.job.source_path} -> {result.output_path or '?'}"
-                )
+            if json_output:
+                return
+            if result.success:
+                _echo(f"[OK] {result.job.source_path} -> {result.output_path}")
+            else:
+                _echo(f"[FAILED] {result.job.source_path}: {result.error}")
 
         engine.run_batch(
             jobs,
@@ -365,8 +410,8 @@ def _run_jobs_and_report(
             on_retry=on_retry,
         )
 
-    engine.shutdown(wait=True)
 
+def _report_results(results: list, json_output: bool) -> None:
     latest_by_id: dict[str, Any] = {}
     for r in results:
         latest_by_id[r.job.job_id] = r
@@ -378,6 +423,8 @@ def _run_jobs_and_report(
                 "source": str(r.job.source_path),
                 "output": str(r.output_path) if r.output_path else None,
                 "target_format": r.job.target_format,
+                # Kept so `fileconverter retry` re-runs with the same settings.
+                "options": r.job.options.values,
                 "success": r.success,
                 "error": r.error,
                 "duration_seconds": r.duration_seconds,
@@ -386,7 +433,12 @@ def _run_jobs_and_report(
         ]
         click.echo(json.dumps(payload, indent=2))
 
-    failed = sum(1 for r in final_results if not r.success)
+    failed_results = [r for r in final_results if not r.success]
+    failed = len(failed_results)
+    if failed and console and not json_output:
+        # The progress bars only show a short status; list the actual errors.
+        for r in failed_results:
+            _echo(f"[red]FAILED[/red] {r.job.source_path}: {r.error}")
     if failed:
         _echo_status(
             f"\n{failed} of {len(final_results)} conversions failed.", json_output
@@ -474,22 +526,53 @@ def retry_cmd(
     "-t",
     "--to",
     "target_format",
-    required=True,
-    help="Target format to convert new files to.",
+    default=None,
+    help="Target format to convert new files to. Required unless --preset supplies one.",
 )
 @click.option("-o", "--output-dir", type=click.Path(file_okay=False), default=None)
 @click.option("--interval", default=2.0, type=float, help="Poll interval in seconds.")
+@click.option(
+    "--preset", default=None, help="Apply a saved preset (see 'fileconverter presets')."
+)
+@click.option(
+    "-O",
+    "--option",
+    "raw_options",
+    multiple=True,
+    help="Converter option as key=value. Repeatable.",
+)
 def watch(
-    folder: str, target_format: str, output_dir: Optional[str], interval: float
+    folder: str,
+    target_format: Optional[str],
+    output_dir: Optional[str],
+    interval: float,
+    preset: Optional[str],
+    raw_options: tuple[str, ...],
 ) -> None:
     """Watch a folder and auto-convert any new files that appear in it.
 
     Press Ctrl+C to stop watching.
     """
 
+    import time
+
     from ..core.watcher import FolderWatcher
 
     cfg = config_module.load_config()
+    options_dict = _parse_option_kv(raw_options)
+    if preset:
+        try:
+            preset_obj = presets_module.get_preset(preset)
+        except FileConverterError as exc:
+            raise click.ClickException(str(exc))
+        target_format = target_format or preset_obj.target_format
+        options_dict = {**preset_obj.options, **options_dict}
+    if not target_format:
+        raise click.ClickException(
+            "Target format required: pass -t/--to, or --preset with a preset that defines one."
+        )
+    target_format = target_format.strip().lower().lstrip(".")
+    options_dict.setdefault("preserve_metadata", cfg.preserve_metadata)
     engine = ConversionEngine(
         max_workers=cfg.max_workers, verify_output=cfg.verify_output
     )
@@ -502,9 +585,11 @@ def watch(
         Path(folder),
         target_format,
         engine,
+        options=options_dict,
         output_dir=out_dir,
         poll_interval=interval,
         on_new_job=announce,
+        overwrite_policy=cfg.overwrite_policy,
     )
     _echo(
         f"Watching '{folder}' for new files (target format: {target_format}). Press Ctrl+C to stop."
@@ -512,8 +597,6 @@ def watch(
     watcher.start()
     try:
         while True:
-            import time
-
             time.sleep(1)
     except KeyboardInterrupt:
         _echo("\nStopping watcher...")
@@ -538,7 +621,7 @@ def doctor() -> None:
                 else f"[red]Missing[/red] — {reason}"
             )
             formats = ", ".join(sorted(conv.input_formats | conv.output_formats))
-            table.add_row(conv.name, formats, status if available else status)
+            table.add_row(conv.name, formats, status)
         console.print(table)
     else:
         for conv in all_converters():
@@ -584,7 +667,10 @@ def presets_save(name: str, target_format: str, raw_options: tuple[str, ...]) ->
     """Save a new custom preset."""
 
     options = _parse_option_kv(raw_options)
-    presets_module.save_preset(name, target_format, options)
+    try:
+        presets_module.save_preset(name, target_format, options)
+    except FileConverterError as exc:
+        raise click.ClickException(str(exc))
     _echo(f"Saved preset '{name}'.")
 
 
@@ -593,7 +679,10 @@ def presets_save(name: str, target_format: str, raw_options: tuple[str, ...]) ->
 def presets_delete(name: str) -> None:
     """Delete a custom preset."""
 
-    presets_module.delete_preset(name)
+    try:
+        presets_module.delete_preset(name)
+    except FileConverterError as exc:
+        raise click.ClickException(str(exc))
     _echo(f"Deleted preset '{name}'.")
 
 

@@ -6,16 +6,21 @@ cd /d "%~dp0\.."
 
 echo Installing build dependencies...
 python -m pip install --upgrade pip
-python -m pip install -e .[all,dev]
+REM A regular (non-editable) install: PyInstaller can't reliably follow the
+REM import hooks that editable installs use.
+python -m pip install .[all,dev]
 
 echo Building GUI executable...
+REM Converters are discovered at runtime via pkgutil, which PyInstaller's
+REM static analysis can't see, so collect every fileconverter submodule.
 pyinstaller --noconfirm --clean --windowed --name FileConverter ^
-  --add-data "gui/resources;gui/resources" ^
-  gui/app.py
+  --collect-submodules fileconverter ^
+  build_scripts\launch_gui.py
 
 echo Building CLI executable...
 pyinstaller --noconfirm --clean --console --name fileconverter-cli ^
-  cli/main.py
+  --collect-submodules fileconverter ^
+  build_scripts\launch_cli.py
 
 echo.
 echo Done. Executables are in dist\FileConverter\ and dist\fileconverter-cli\

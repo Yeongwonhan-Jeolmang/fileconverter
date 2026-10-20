@@ -30,18 +30,39 @@ def verify_output_file(path: Path, min_size_bytes: int = 1) -> tuple[bool, str]:
         return False, "Output file is empty."
 
     ext = path.suffix.lower().lstrip(".")
-    signature_checks: dict[str, bytes] = {
-        "png": b"\x89PNG",
-        "pdf": b"%PDF",
-        "gif": b"GIF8",
-        "zip": b"PK\x03\x04",
-        "docx": b"PK\x03\x04",
-        "xlsx": b"PK\x03\x04",
-    }
-    expected = signature_checks.get(ext)
+    expected = _SIGNATURE_CHECKS.get(ext)
     if expected:
+        offset, magic = expected
         with open(path, "rb") as fh:
-            head = fh.read(len(expected))
-        if head != expected:
+            head = fh.read(offset + len(magic))
+        if head[offset : offset + len(magic)] != magic:
             return False, f"Output file does not look like a valid {ext.upper()} file."
     return True, "OK"
+
+
+_ZIP_MAGIC = (0, b"PK\x03\x04")
+_GZIP_MAGIC = (0, b"\x1f\x8b")
+
+# extension -> (byte offset, expected magic bytes)
+_SIGNATURE_CHECKS: dict[str, tuple[int, bytes]] = {
+    "png": (0, b"\x89PNG"),
+    "jpg": (0, b"\xff\xd8\xff"),
+    "jpeg": (0, b"\xff\xd8\xff"),
+    "gif": (0, b"GIF8"),
+    "bmp": (0, b"BM"),
+    "webp": (8, b"WEBP"),
+    "pdf": (0, b"%PDF"),
+    "zip": _ZIP_MAGIC,
+    "docx": _ZIP_MAGIC,
+    "xlsx": _ZIP_MAGIC,
+    "pptx": _ZIP_MAGIC,
+    "odt": _ZIP_MAGIC,
+    "ods": _ZIP_MAGIC,
+    "epub": _ZIP_MAGIC,
+    "gz": _GZIP_MAGIC,
+    "tgz": _GZIP_MAGIC,
+    "7z": (0, b"7z\xbc\xaf\x27\x1c"),
+    "flac": (0, b"fLaC"),
+    "ogg": (0, b"OggS"),
+    "wav": (0, b"RIFF"),
+}

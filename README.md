@@ -4,7 +4,7 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey.svg)]()
 [![Code style: black](https://img.shields.io/badge/code%20style-black-000000.svg)](https://github.com/psf/black)
-[![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
+[![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](#adding-a-new-format-plugin-guide)
 
 **Images. Documents. Spreadsheets. Audio. Video. Archives. One tool.**
 
@@ -60,14 +60,14 @@ Most file converters are single-purpose (only images, or only via a website that
 
 | Domain | Formats | Extra engine required? |
 |---|---|---|
-| **Images** | PNG, JPG/JPEG, BMP, GIF, WEBP, TIFF, ICO, HEIC/HEIF (read), PDF (image ⇄ PDF, multi-page) | None (Pillow only). PDF→image needs `pypdfium2`. HEIC needs `pillow-heif`. |
+| **Images** | PNG, JPG/JPEG, BMP, GIF, WEBP, TIFF, ICO, HEIC/HEIF (read), PDF (image ⇄ PDF; multi-page PDFs, multi-page TIFFs and animated GIFs keep every page/frame) | None (Pillow only). PDF→image needs `pypdfium2`. HEIC needs `pillow-heif`. |
 | **Documents** | TXT, Markdown, HTML, DOCX, PDF, RTF, ODT, PPTX | None for TXT/MD/HTML/simple PDF. Full DOCX/ODT/PPTX/PDF fidelity uses **LibreOffice** or **Pandoc** if installed (auto-detected). |
-| **Spreadsheets** | CSV, TSV, XLSX, XLS (read), JSON, Parquet, ODS | `pandas` + `openpyxl` (Parquet needs `pyarrow`, ODS needs `odfpy`). |
-| **Audio** | MP3, WAV, OGG, FLAC, AAC, M4A, WMA, AIFF | **ffmpeg** binary on PATH + `pydub`. |
-| **Video** | MP4, AVI, MOV, MKV, WEBM, FLV, WMV, GIF export, audio extraction | **ffmpeg** binary on PATH. |
-| **Archives** | ZIP, TAR, TAR.GZ, TAR.BZ2, TAR.XZ, 7Z, folder → archive, archive → folder | 7Z needs `py7zr`; everything else is in the standard library. |
+| **Spreadsheets** | CSV, TSV, XLSX, XLS (read), JSON, Parquet, ODS | `pandas` + `openpyxl` (Parquet needs `pyarrow`, ODS needs `odfpy`, reading XLS needs `xlrd`). |
+| **Audio** | MP3, WAV, OGG, OPUS, FLAC, AAC, M4A, WMA, AIFF | **ffmpeg** binary on PATH (no Python package needed). |
+| **Video** | MP4, AVI, MOV, MKV, WEBM, FLV, WMV, M4V, GIF export, audio extraction | **ffmpeg** binary on PATH. |
+| **Archives** | ZIP, TAR, TAR.GZ, TAR.BZ2, TAR.XZ, 7Z, folder → archive (`convert ./myfolder -t zip`), archive → folder (`-t folder`) | 7Z needs `py7zr`; everything else is in the standard library. |
 | **Data** | YAML, JSON, TOML, XML | `pyyaml` for YAML, `tomli`/`tomli-w` for TOML. XML uses the standard library. |
-| **Vector graphics** | SVG → PNG/PDF, DXF → SVG | `cairosvg` for SVG rendering, `ezdxf` for reading DXF. |
+| **Vector graphics** | SVG → PNG/PDF, DXF → SVG/PNG/PDF | `cairosvg` for SVG rendering, `ezdxf` for reading DXF. |
 | **Fonts** | TTF, OTF, WOFF, WOFF2 | `fonttools` (WOFF2 also needs `brotli`). |
 | **Ebooks** | EPUB, MOBI, AZW3, FB2, TXT, HTML | EPUB → TXT/HTML needs `ebooklib` + `beautifulsoup4`. MOBI/AZW3/FB2 and everything else use **Calibre**'s `ebook-convert` CLI if it's on PATH. |
 | **Contacts & calendar** | VCF (vCard) ⇄ CSV, ICS (iCalendar) ⇄ CSV | `vobject`. Note: VCF and ICS only convert to/from CSV, not to each other. |
@@ -119,10 +119,8 @@ pip install -e ".[gui]"          # GUI front-end (PySide6)
 pip install -e ".[images]"       # Pillow, pypdfium2
 pip install -e ".[images-heic]"  # + HEIC/HEIF support
 pip install -e ".[documents]"    # python-docx, pypdf, reportlab, markdown, html2text, bs4
-pip install -e ".[spreadsheets]" # pandas, openpyxl, odfpy, pyarrow
-pip install -e ".[audio]"        # pydub (still needs the ffmpeg binary separately)
+pip install -e ".[spreadsheets]" # pandas, openpyxl, odfpy, pyarrow, xlrd
 pip install -e ".[archives]"     # py7zr (zip/tar work with zero extras)
-pip install -e ".[watch]"        # watchdog (folder watching still works without it, just polls)
 pip install -e ".[data]"         # pyyaml, tomli/tomli-w (JSON/XML work with zero extras)
 pip install -e ".[vector]"       # cairosvg, ezdxf
 pip install -e ".[fonts]"        # fonttools, brotli
@@ -206,8 +204,12 @@ fileconverter convert a.png b.png c.png -t webp
 # Glob pattern
 fileconverter convert "*.csv" -t xlsx -o ./converted
 
-# Whole folder, recursively
+# Whole folder, recursively (hidden files/folders like .git are skipped)
 fileconverter convert ./scans -t pdf --recursive
+
+# Compress a folder / extract an archive into a folder
+fileconverter convert ./project -t zip
+fileconverter convert backup.tar.gz -t folder
 
 # With options
 fileconverter convert clip.mov -t mp4 -O bitrate=1500k -O resolution=1280x720 -O fps=30
@@ -230,7 +232,7 @@ fileconverter convert *.png -t jpg --json-output > results.json
 fileconverter doctor                     # check installed converters & optional engines
 fileconverter formats                    # list every supported source -> target pairing
 fileconverter detect somefile            # detect real format via extension + magic bytes
-fileconverter watch ./drop-folder -t pdf # auto-convert new files that appear in a folder
+fileconverter watch ./drop-folder -t pdf # auto-convert new files that appear in a folder (also takes --preset / -O)
 fileconverter retry results.json         # re-run only the failures from a previous --json-output run
 fileconverter presets list               # show built-in + custom presets
 fileconverter presets save my-preset -t jpg -O quality=75
@@ -246,15 +248,20 @@ Pass options with `-O key=value` (CLI) or as a JSON object (GUI's advanced optio
 
 | Option | Applies to | Example |
 |---|---|---|
-| `quality` | images (JPEG/WEBP), audio via bitrate | `-O quality=80` |
-| `resize` | images | `-O resize=1920,1080` |
+| `quality` | images (JPEG/WEBP) | `-O quality=80` |
+| `resize` | images (fits inside the box, keeps aspect ratio) | `-O resize=1920,1080` or `-O resize=1920x1080` |
 | `rotate` | images | `-O rotate=90` |
-| `preserve_metadata` | images, documents | `-O preserve_metadata=false` |
+| `preserve_metadata` | images (EXIF); defaults to the `preserve_metadata` config setting | `-O preserve_metadata=false` |
 | `bitrate` | audio, video | `-O bitrate=192k` |
 | `sample_rate` | audio | `-O sample_rate=44100` |
 | `channels` | audio | `-O channels=2` |
 | `gain_db` | audio | `-O gain_db=-3` |
-| `resolution` | video | `-O resolution=1280x720` |
+| `audio_codec` | audio, video → audio | `-O audio_codec=libopus` |
+| `page_range` | PDF → image | `-O page_range=1-3,5` |
+| `dpi` | PDF → image (default 144) | `-O dpi=300` |
+| `scale` / `width` / `height` / `background` | SVG/DXF → PNG/PDF | `-O width=1024` |
+| `xml_root` / `indent` | data (JSON/YAML/TOML/XML) | `-O xml_root=config` |
+| `resolution` | video (fits inside the box; use `-1` for one side to keep aspect, e.g. `1280x-1`) | `-O resolution=1280x720` |
 | `fps` | video | `-O fps=30` |
 | `video_codec` | video | `-O video_codec=libx264` |
 | `delimiter` | spreadsheets (csv/tsv) | `-O delimiter=;` |
@@ -305,7 +312,7 @@ Point FileConverter at a folder; anything new that shows up gets converted autom
 fileconverter watch ~/Downloads/to-convert -t pdf
 ```
 
-Uses efficient event-based watching if `watchdog` is installed, otherwise falls back to lightweight polling (still fully functional, just checks every couple of seconds).
+Uses lightweight polling (no extra dependencies) — the folder is re-checked every couple of seconds (`--interval` to change it). Hidden files, in-progress downloads (`.part`, `.crdownload`, ...), files already in the target format, and file types that can't be converted to the target are ignored.
 
 New files are only converted once their size has stopped changing across a couple of polls, so a file that's still being copied or exported into the folder (e.g. a scanner writing a large PDF) isn't picked up mid-write and converted from a truncated/partial copy.
 
@@ -437,7 +444,7 @@ register(MyFormatConverter())
 ```
 
 3. That's it. Because `converters/__init__.py` auto-imports every `*_converter.py` file, your new format instantly appears in `fileconverter formats`, the GUI's target-format dropdown, and the engine — with zero changes anywhere else.
-4. Add a test in `tests/test_my_format_converter.py` following the existing tests as a template.
+4. Add a test in `tests/test_my_format_converter.py`, using `tests/test_converters.py` as a template.
 
 ## Running the test suite
 

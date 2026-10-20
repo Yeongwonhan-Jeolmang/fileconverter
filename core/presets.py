@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Any
 
 from .config import CONFIG_DIR
@@ -49,12 +48,27 @@ class Preset:
 
 
 def _load_raw() -> dict[str, dict[str, Any]]:
+    """Load custom presets, dropping any malformed entries (a hand-edited
+    file with a missing ``target_format`` used to crash every preset
+    listing with a ``KeyError``)."""
+
     if not PRESETS_FILE.exists():
         return {}
     try:
-        return json.loads(PRESETS_FILE.read_text(encoding="utf-8"))
+        data = json.loads(PRESETS_FILE.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError):
         return {}
+    if not isinstance(data, dict):
+        return {}
+    valid: dict[str, dict[str, Any]] = {}
+    for name, value in data.items():
+        if (
+            isinstance(value, dict)
+            and isinstance(value.get("target_format"), str)
+            and isinstance(value.get("options", {}), dict)
+        ):
+            valid[name] = value
+    return valid
 
 
 def _save_raw(data: dict[str, dict[str, Any]]) -> None:
@@ -87,16 +101,28 @@ def save_preset(name: str, target_format: str, options: dict[str, Any]) -> None:
         raise PresetError(
             "Preset name must be a non-empty string without path separators."
         )
+    target_format = (target_format or "").strip().lower().lstrip(".")
+    if not target_format:
+        raise PresetError("Preset target format must not be empty.")
     data = _load_raw()
-    data[name] = {"target_format": target_format, "options": options}
+    data[name] = {"target_format": target_format, "options": dict(options or {})}
     _save_raw(data)
 
 
 def delete_preset(name: str) -> None:
-    if name in BUILTIN_PRESETS:
-        raise PresetError(f"'{name}' is a built-in preset and cannot be deleted.")
+    """Delete a custom preset. If it was overriding a built-in preset of
+    the same name, the built-in one becomes visible again."""
+
     data = _load_raw()
     if name not in data:
+        if name in BUILTIN_PRESETS:
+            raise PresetError(f"'{name}' is a built-in preset and cannot be deleted.")
         raise PresetError(f"No such custom preset: '{name}'.")
     del data[name]
     _save_raw(data)
+
+
+def is_builtin(name: str) -> bool:
+    """True if ``name`` currently resolves to an unmodified built-in preset."""
+
+    return name in BUILTIN_PRESETS and name not in _load_raw()

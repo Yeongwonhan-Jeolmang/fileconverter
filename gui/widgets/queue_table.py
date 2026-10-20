@@ -33,7 +33,8 @@ from ...core.registry import supported_targets
 COLUMNS = ["File", "Source Format", "Target Format", "Progress", "Status", ""]
 _ROW_ID_ROLE = Qt.ItemDataRole.UserRole
 
-_ACTIVE_STATUSES = {"queued", "starting", "converting", "running"}
+STATUS_READY = "Ready"
+STATUS_DONE = "Done"
 
 
 class QueueTable(QTableWidget):
@@ -68,6 +69,11 @@ class QueueTable(QTableWidget):
         self._statuses: dict[int, str] = {}
         self._job_id_by_row: dict[int, str] = {}
         self._row_by_job_id: dict[str, int] = {}
+        # Rows with a job queued or running in the current batch. Tracked
+        # explicitly: inferring it from the status text never worked, since
+        # converters report free-form messages ("Encoding", "Rendered page
+        # 2/5", ...), so right-click -> Cancel never appeared mid-conversion.
+        self._active_rows: set[int] = set()
 
     # ------------------------------------------------------------------
     # Adding / removing rows
@@ -105,7 +111,7 @@ class QueueTable(QTableWidget):
         row = self.rowCount()
         self.insertRow(row)
         self._paths[row_id] = path
-        self._statuses[row_id] = "Queued"
+        self._statuses[row_id] = STATUS_READY
 
         file_item = QTableWidgetItem(str(path))
         file_item.setData(_ROW_ID_ROLE, row_id)
@@ -120,6 +126,9 @@ class QueueTable(QTableWidget):
         target_combo.addItems(targets)
         if default_target and default_target in targets:
             target_combo.setCurrentText(default_target)
+        target_combo.currentTextChanged.connect(
+            lambda _text, rid=row_id: self._on_target_changed(rid)
+        )
         self.setCellWidget(row, 2, target_combo)
 
         progress = QProgressBar()
@@ -127,7 +136,7 @@ class QueueTable(QTableWidget):
         progress.setValue(0)
         self.setCellWidget(row, 3, progress)
 
-        status_item = QTableWidgetItem("Queued")
+        status_item = QTableWidgetItem(STATUS_READY)
         self.setItem(row, 4, status_item)
 
         remove_btn = QPushButton("\u2715")
@@ -148,6 +157,7 @@ class QueueTable(QTableWidget):
         self._paths.pop(row_id, None)
         self._output_paths.pop(row_id, None)
         self._statuses.pop(row_id, None)
+        self._active_rows.discard(row_id)
         job_id = self._job_id_by_row.pop(row_id, None)
         if job_id is not None:
             self._row_by_job_id.pop(job_id, None)
@@ -163,6 +173,7 @@ class QueueTable(QTableWidget):
         self._statuses.clear()
         self._job_id_by_row.clear()
         self._row_by_job_id.clear()
+        self._active_rows.clear()
 
     # ------------------------------------------------------------------
     # Lookups
@@ -222,10 +233,37 @@ class QueueTable(QTableWidget):
         return self._output_paths.get(row_id)
 
     def is_active(self, row_id: int) -> bool:
-        return (
-            self._statuses.get(row_id, "").split(":")[0].strip().lower()
-            in _ACTIVE_STATUSES
-        )
+        return row_id in self._active_rows
+
+    def set_active(self, row_id: int, active: bool) -> None:
+        if active:
+            self._active_rows.add(row_id)
+        else:
+            self._active_rows.discard(row_id)
+        row = self._index_for_row_id(row_id)
+        if row is not None:
+            combo = self.cellWidget(row, 2)
+            if combo is not None:
+                # Changing the target mid-conversion would be misleading.
+                combo.setEnabled(not active)
+
+    def clear_active(self) -> None:
+        for row_id in list(self._active_rows):
+            self.set_active(row_id, False)
+
+    def status_for_row(self, row_id: int) -> str:
+        return self._statuses.get(row_id, "")
+
+    def _on_target_changed(self, row_id: int) -> None:
+        """A finished/failed row whose target format changes is ready to be
+        converted again."""
+
+        if row_id in self._active_rows:
+            return
+        if self._statuses.get(row_id) != STATUS_READY:
+            self._output_paths.pop(row_id, None)
+            self.set_progress(row_id, 0.0)
+            self.set_status(row_id, STATUS_READY)
 
     def set_progress(self, row_id: int, fraction: float, message: str = "") -> None:
         row = self._index_for_row_id(row_id)

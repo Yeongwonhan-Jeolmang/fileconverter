@@ -24,6 +24,7 @@ def main() -> None:
     # `python -m fileconverter convert a.png -t jpg` works without `--cli`.
     known_cli_commands = {
         "convert",
+        "retry",
         "watch",
         "doctor",
         "formats",
@@ -33,6 +34,7 @@ def main() -> None:
         "--help",
         "-h",
         "--version",
+        "--verbose",
     }
     if args and args[0] in known_cli_commands:
         from .cli.main import main as cli_main

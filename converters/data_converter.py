@@ -7,6 +7,12 @@ binaries required; PyYAML and toml/tomli(-w) are pure-Python pip packages.
 Options:
   - xml_root: str — root element name when writing XML (default "root")
   - indent: int — indent width for JSON/XML output (default 2)
+
+XML mapping (same convention as the popular ``xmltodict`` library, so the
+JSON/YAML you get is familiar and round-trips back to equivalent XML):
+  - attributes become keys prefixed with "@"  (``<a id="1">`` -> ``{"@id": "1"}``)
+  - an element's text becomes "#text" when it also has attributes/children
+  - repeated child elements become a list
 """
 
 from __future__ import annotations
@@ -26,6 +32,13 @@ class DataConverter(BaseConverter):
     )
     input_formats = _DATA_FORMATS
     output_formats = _DATA_FORMATS
+
+    def can_convert(self, src_format: str, dst_format: str) -> bool:
+        src = src_format.lower().lstrip(".")
+        dst = dst_format.lower().lstrip(".")
+        if {src, dst} <= {"yaml", "yml"}:
+            return False  # same format, just a different extension
+        return super().can_convert(src, dst)
 
     def check_available(self) -> tuple[bool, str]:
         missing = []
@@ -53,7 +66,7 @@ class DataConverter(BaseConverter):
         self, job: ConversionJob, progress_cb: ProgressCallback = None
     ) -> ConversionResult:
         def _do() -> None:
-            src_ext = job.source_path.suffix.lower().lstrip(".")
+            src_ext = job.src_format
             if src_ext == "yml":
                 src_ext = "yaml"
             target = job.target_format.lower().lstrip(".")
@@ -107,12 +120,15 @@ class DataConverter(BaseConverter):
         raise ValueError(f"Unsupported data source format: {src_ext}")
 
     def _write(self, data, job: ConversionJob, target: str, options) -> None:
-        indent = options.get("indent", 2)
+        indent = int(options.get("indent", 2))
         if target == "json":
             import json
 
+            # default=str: TOML and YAML have native date/datetime values,
+            # which json can't serialize on its own; write them as ISO text.
             job.output_path.write_text(
-                json.dumps(data, indent=indent, ensure_ascii=False), encoding="utf-8"
+                json.dumps(data, indent=indent, ensure_ascii=False, default=_json_default),
+                encoding="utf-8",
             )
         elif target == "yaml":
             try:
@@ -134,7 +150,9 @@ class DataConverter(BaseConverter):
                 ) from exc
             if not isinstance(data, dict):
                 raise ValueError("TOML requires a top-level mapping/object.")
-            job.output_path.write_bytes(tomli_w.dumps(data).encode("utf-8"))
+            job.output_path.write_text(
+                tomli_w.dumps(_strip_nulls(data)), encoding="utf-8"
+            )
         elif target == "xml":
             root_name = options.get("xml_root", "root")
             xml_text = self._data_to_xml(data, root_name, indent)
@@ -150,9 +168,10 @@ class DataConverter(BaseConverter):
 
         def _elem_to_obj(elem):
             children = list(elem)
-            if not children:
-                return elem.text.strip() if elem.text and elem.text.strip() else None
-            obj: dict = {}
+            text_value = elem.text.strip() if elem.text and elem.text.strip() else None
+            if not children and not elem.attrib:
+                return text_value
+            obj: dict = {f"@{k}": v for k, v in elem.attrib.items()}
             for child in children:
                 value = _elem_to_obj(child)
                 if child.tag in obj:
@@ -163,6 +182,8 @@ class DataConverter(BaseConverter):
                         obj[child.tag] = [existing, value]
                 else:
                     obj[child.tag] = value
+            if text_value is not None:
+                obj["#text"] = text_value
             return obj
 
         return {root.tag: _elem_to_obj(root)}
@@ -171,42 +192,89 @@ class DataConverter(BaseConverter):
         from xml.etree import ElementTree as ET
         from xml.dom import minidom
 
-        def _build(parent, key, value):
+        def _fill(el, value):
+            """Populate element ``el`` from ``value``."""
             if isinstance(value, dict):
-                el = ET.SubElement(parent, str(key))
                 for k, v in value.items():
-                    _build(el, k, v)
+                    key = str(k)
+                    if key.startswith("@"):
+                        el.set(_xml_name(key[1:]), _xml_text(v))
+                    elif key == "#text":
+                        el.text = _xml_text(v)
+                    else:
+                        _build(el, key, v)
             elif isinstance(value, list):
                 for item in value:
-                    _build(parent, key, item)
+                    _build(el, "item", item)
             else:
-                el = ET.SubElement(parent, str(key))
-                el.text = "" if value is None else str(value)
+                el.text = _xml_text(value)
 
-        if isinstance(data, dict) and len(data) == 1 and root_name not in data:
-            # data already shaped like {actual_root: {...}} (e.g. from XML source)
+        def _build(parent, key, value):
+            if isinstance(value, list):
+                # A list under a key becomes repeated <key> elements.
+                for item in value:
+                    _build(parent, key, item)
+                return
+            _fill(ET.SubElement(parent, _xml_name(key)), value)
+
+        if (
+            isinstance(data, dict)
+            and len(data) == 1
+            and not isinstance(next(iter(data.values())), list)
+        ):
+            # Data already shaped like {actual_root: ...} (e.g. from an XML
+            # source): use that key as the root element. (A single key that
+            # holds a *list* can't be a root — XML has exactly one root
+            # element — so that case wraps it in root_name instead.)
             inner_key, inner_val = next(iter(data.items()))
-            root = ET.Element(inner_key)
-            if isinstance(inner_val, dict):
-                for k, v in inner_val.items():
-                    _build(root, k, v)
-            else:
-                root.text = "" if inner_val is None else str(inner_val)
+            root = ET.Element(_xml_name(inner_key))
+            _fill(root, inner_val)
         else:
-            root = ET.Element(root_name)
-            if isinstance(data, dict):
-                for k, v in data.items():
-                    _build(root, k, v)
-            elif isinstance(data, list):
-                for item in data:
-                    _build(root, "item", item)
-            else:
-                root.text = str(data)
+            root = ET.Element(_xml_name(root_name))
+            _fill(root, data)
 
         rough = ET.tostring(root, encoding="unicode")
         pretty = minidom.parseString(rough).toprettyxml(indent=" " * indent)
         # Drop the extra blank lines minidom tends to add.
-        return "\n".join(line for line in pretty.splitlines() if line.strip())
+        return "\n".join(line for line in pretty.splitlines() if line.strip()) + "\n"
+
+
+def _json_default(value):
+    if hasattr(value, "isoformat"):
+        return value.isoformat()
+    return str(value)
+
+
+def _strip_nulls(value):
+    """TOML has no null; drop None values instead of crashing on them."""
+
+    if isinstance(value, dict):
+        return {k: _strip_nulls(v) for k, v in value.items() if v is not None}
+    if isinstance(value, list):
+        return [_strip_nulls(v) for v in value if v is not None]
+    return value
+
+
+def _xml_text(value) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    return str(value)
+
+
+def _xml_name(name) -> str:
+    """Turn an arbitrary key into a valid XML element/attribute name
+    (JSON keys like "first name" or "2024" aren't valid tags)."""
+
+    import re
+
+    text = re.sub(r"[^\w.\-]", "_", str(name), flags=re.UNICODE)
+    if not text or not (text[0].isalpha() or text[0] == "_"):
+        text = f"_{text}"
+    if text.lower().startswith("xml"):
+        text = f"_{text}"
+    return text
 
 
 register(DataConverter())

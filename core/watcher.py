@@ -1,8 +1,8 @@
 """Folder watching: automatically convert files dropped into a directory.
 
-Uses the optional ``watchdog`` package when available for efficient,
-event-driven watching. Falls back to simple polling so the feature still
-works with zero extra dependencies installed.
+Uses lightweight polling (no extra dependencies): the folder is re-scanned
+every ``poll_interval`` seconds, and a new file is only converted once its
+size has stopped changing, so half-written files aren't picked up.
 """
 
 from __future__ import annotations
@@ -11,8 +11,17 @@ import threading
 from pathlib import Path
 from typing import Callable, Optional
 
-from .engine import ConversionEngine, build_output_path
 from .base import ConversionJob, ConversionOptions
+from .engine import ConversionEngine, build_output_path
+from .formats import detect_format
+from .logging_setup import get_logger
+from .registry import find_converter
+
+# In-progress downloads / editor lock files that should never be converted.
+_IGNORED_SUFFIXES = frozenset(
+    {"part", "partial", "crdownload", "download", "tmp", "temp", "swp", "lock"}
+)
+_IGNORED_NAMES = frozenset({"thumbs.db", "desktop.ini"})
 
 FileHandlerCallback = Callable[[Path], None]
 
@@ -75,8 +84,8 @@ class FolderWatcher:
         while not self._stop_event.is_set():
             try:
                 self._scan_once()
-            except OSError:
-                pass
+            except Exception:  # noqa: BLE001 — keep watching no matter what
+                get_logger().exception("Folder watcher scan failed for %s", self.folder)
             self._stop_event.wait(self.poll_interval)
 
     def _scan_once(self) -> None:
@@ -88,7 +97,7 @@ class FolderWatcher:
             current_keys.add(key)
             if key in self._seen:
                 continue
-            if path.suffix.lower().lstrip(".") == self.target_format:
+            if self._should_ignore(path):
                 self._seen.add(key)
                 continue
             if self._has_settled(key, path):
@@ -101,6 +110,20 @@ class FolderWatcher:
         for key in list(self._pending_sizes):
             if key not in current_keys:
                 self._pending_sizes.pop(key, None)
+
+    def _should_ignore(self, path: Path) -> bool:
+        name = path.name
+        suffix = path.suffix.lower().lstrip(".")
+        if name.startswith((".", "~$")) or name.lower() in _IGNORED_NAMES:
+            return True
+        if suffix in _IGNORED_SUFFIXES:
+            return True
+        # Already in the target format (including outputs we wrote here).
+        if suffix == self.target_format or name.lower().endswith(
+            f".tar.{self.target_format}"
+        ):
+            return True
+        return False
 
     def _has_settled(self, key: str, path: Path) -> bool:
         """True once ``path``'s size has been identical across
@@ -121,6 +144,13 @@ class FolderWatcher:
         return streak >= self.settle_checks
 
     def _dispatch(self, path: Path) -> None:
+        if find_converter(detect_format(path), self.target_format) is None:
+            # Nothing can convert this file type to the target; don't
+            # flood the history with guaranteed failures.
+            get_logger().info(
+                "Watcher: no converter for %s -> %s, ignoring.", path.name, self.target_format
+            )
+            return
         output_path = build_output_path(
             path,
             self.target_format,

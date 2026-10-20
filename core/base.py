@@ -58,12 +58,29 @@ class ConversionJob:
     target_format: str
     options: ConversionOptions = field(default_factory=ConversionOptions)
     job_id: str = ""
+    # The *detected* source format (extension + magic-byte sniffing), filled
+    # in by the engine before the converter runs. Converters should prefer
+    # this over ``source_path.suffix`` so that misnamed or extension-less
+    # files are handled as the format the engine actually routed them as.
+    source_format: str = ""
 
     def __post_init__(self) -> None:
         self.source_path = Path(self.source_path)
         self.output_path = Path(self.output_path)
+        self.target_format = self.target_format.lower().lstrip(".")
+        if isinstance(self.options, dict):
+            self.options = ConversionOptions.from_dict(self.options)
         if not self.job_id:
             self.job_id = f"{self.source_path.name}->{self.target_format}-{id(self)}"
+
+    @property
+    def src_format(self) -> str:
+        """The format converters should treat the source as: the
+        engine-detected one when available, else the file extension."""
+
+        if self.source_format:
+            return self.source_format.lower().lstrip(".")
+        return self.source_path.suffix.lower().lstrip(".")
 
 
 @dataclass

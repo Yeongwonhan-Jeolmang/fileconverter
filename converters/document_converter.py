@@ -10,7 +10,9 @@ Layered strategy (most specific -> most general):
 
 from __future__ import annotations
 
+import html as html_lib
 import shutil
+import tempfile
 from pathlib import Path
 
 from ..core.base import BaseConverter, ConversionJob, ConversionResult, ProgressCallback
@@ -21,6 +23,10 @@ from ..core.registry import register
 _TEXT_LIKE = frozenset({"txt", "md", "html", "htm"})
 _OFFICE_LIKE = frozenset({"docx", "doc", "odt", "rtf", "pdf", "pptx", "ppt"})
 _ALL_DOC_FORMATS = _TEXT_LIKE | _OFFICE_LIKE
+_SLIDES = frozenset({"pptx", "ppt"})
+# Targets for which a PDF must be opened as a *text* document (LibreOffice
+# otherwise opens PDFs in Draw, which has no Word/ODT/RTF export filter).
+_PDF_TO_WRITER_TARGETS = frozenset({"docx", "doc", "odt", "rtf", "txt"})
 
 
 def _find_libreoffice() -> str | None:
@@ -45,6 +51,26 @@ class DocumentConverter(BaseConverter):
     input_formats = _ALL_DOC_FORMATS
     output_formats = _ALL_DOC_FORMATS
 
+    def can_convert(self, src_format: str, dst_format: str) -> bool:
+        src = src_format.lower().lstrip(".")
+        dst = dst_format.lower().lstrip(".")
+        # Same-format "conversions" (pdf -> pdf, docx -> docx) aren't
+        # conversions; html <-> htm is just a rename.
+        if {src, dst} <= {"html", "htm"} or src == dst:
+            return False
+        if not super().can_convert(src, dst):
+            return False
+        # Not every engine can do every pair: LibreOffice can't turn a text
+        # document into slides (or vice versa), nothing here can write
+        # Markdown from PDF/.doc, etc. Only advertise pairs that can work.
+        if src in _SLIDES:
+            return dst in _SLIDES or dst in ("pdf", "html", "htm")
+        if dst in _SLIDES:
+            return src in _SLIDES or (dst == "pptx" and src == "md")
+        if dst == "md":
+            return src in ("txt", "html", "htm", "docx", "odt", "rtf")
+        return True
+
     def check_available(self) -> tuple[bool, str]:
         notes = []
         if _find_libreoffice():
@@ -59,7 +85,7 @@ class DocumentConverter(BaseConverter):
         self, job: ConversionJob, progress_cb: ProgressCallback = None
     ) -> ConversionResult:
         def _do() -> None:
-            src_ext = job.source_path.suffix.lower().lstrip(".")
+            src_ext = job.src_format
             target = job.target_format.lower().lstrip(".")
 
             if progress_cb:
@@ -67,10 +93,18 @@ class DocumentConverter(BaseConverter):
 
             if self._try_native(job, src_ext, target, progress_cb):
                 return
-            if self._try_libreoffice(job, target, progress_cb):
-                return
-            if self._try_pandoc(job, src_ext, target, progress_cb):
-                return
+
+            # Try each external engine in turn; if one fails outright, still
+            # give the next one a chance before reporting the first error.
+            first_error: Exception | None = None
+            for engine in (self._try_libreoffice, self._try_pandoc):
+                try:
+                    if engine(job, src_ext, target, progress_cb):
+                        return
+                except ConversionFailedError as exc:
+                    first_error = first_error or exc
+            if first_error is not None:
+                raise first_error
 
             raise MissingDependencyError(
                 "LibreOffice or Pandoc",
@@ -92,7 +126,10 @@ class DocumentConverter(BaseConverter):
                 escaped = (
                     text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
                 )
-                html = f"<html><body><pre>{escaped}</pre></body></html>"
+                html = (
+                    "<html><head><meta charset='utf-8'></head>"
+                    f"<body><pre>{escaped}</pre></body></html>"
+                )
                 job.output_path.write_text(html, encoding="utf-8")
             return True
 
@@ -155,8 +192,21 @@ class DocumentConverter(BaseConverter):
                     "python-docx", "Install with: pip install python-docx"
                 ) from exc
             document = docx.Document(str(job.source_path))
-            parts = [f"<p>{p.text}</p>" for p in document.paragraphs]
-            html = f"<html><body>{''.join(parts)}</body></html>"
+            parts = []
+            for p in document.paragraphs:
+                text = html_lib.escape(p.text)
+                style = (p.style.name if p.style is not None else "") or ""
+                if style.startswith("Heading") and style[-1:].isdigit():
+                    level = min(int(style[-1]), 6)
+                    parts.append(f"<h{level}>{text}</h{level}>")
+                elif style == "Title":
+                    parts.append(f"<h1>{text}</h1>")
+                else:
+                    parts.append(f"<p>{text}</p>")
+            html = (
+                "<html><head><meta charset='utf-8'></head>"
+                f"<body>{''.join(parts)}</body></html>"
+            )
             job.output_path.write_text(html, encoding="utf-8")
             return True
 
@@ -173,6 +223,11 @@ class DocumentConverter(BaseConverter):
                 ) from exc
             reader = PdfReader(str(job.source_path))
             text = "\n\n".join(page.extract_text() or "" for page in reader.pages)
+            if not text.strip():
+                raise ConversionFailedError(
+                    "No extractable text found in this PDF (it may be a scanned "
+                    "image). Try converting it to PNG instead, or OCR it first."
+                )
             job.output_path.write_text(text, encoding="utf-8")
             return True
 
@@ -181,61 +236,106 @@ class DocumentConverter(BaseConverter):
     def _text_to_pdf(self, job: ConversionJob) -> None:
         try:
             from reportlab.lib.pagesizes import LETTER  # type: ignore
+            from reportlab.lib.utils import simpleSplit
             from reportlab.pdfgen import canvas
         except ImportError as exc:
             raise MissingDependencyError(
                 "reportlab", "Install with: pip install reportlab"
             ) from exc
 
+        font_name, font_size, leading, margin = "Helvetica", 10, 14, 72
         text = job.source_path.read_text(encoding="utf-8", errors="replace")
         c = canvas.Canvas(str(job.output_path), pagesize=LETTER)
+        c.setFont(font_name, font_size)
         width, height = LETTER
-        y = height - 72
-        for line in text.splitlines() or [""]:
-            for wrapped in _wrap_line(line, 95):
-                if y < 72:
+        max_width = width - 2 * margin
+        y = height - margin
+        for line in text.expandtabs(4).splitlines() or [""]:
+            # Wrap by measured string width (not character count), so long
+            # lines never run off the right edge of the page.
+            wrapped_lines = simpleSplit(line, font_name, font_size, max_width) or [""]
+            for wrapped in wrapped_lines:
+                if y < margin:
                     c.showPage()
-                    y = height - 72
-                c.drawString(72, y, wrapped)
-                y -= 14
+                    c.setFont(font_name, font_size)
+                    y = height - margin
+                c.drawString(margin, y, wrapped)
+                y -= leading
         c.save()
 
-    def _try_libreoffice(self, job: ConversionJob, target: str, progress_cb) -> bool:
+    def _try_libreoffice(
+        self, job: ConversionJob, src_ext: str, target: str, progress_cb
+    ) -> bool:
         soffice = _find_libreoffice()
         if not soffice:
             return False
-        out_dir = job.output_path.parent
-        cmd = [
-            soffice,
-            "--headless",
-            "--norestore",
-            "--convert-to",
-            target,
-            "--outdir",
-            str(out_dir),
-            str(job.source_path),
-        ]
         if progress_cb:
             progress_cb(0.4, "Running LibreOffice headless conversion")
-        proc = run_killable(cmd, progress_cb=progress_cb, timeout=180)
-        if proc.returncode != 0:
-            raise ConversionFailedError(
-                f"LibreOffice conversion failed: {proc.stderr.strip()}"
-            )
-        produced = out_dir / f"{job.source_path.stem}.{target}"
-        if produced.exists() and produced != job.output_path:
-            produced.replace(job.output_path)
+        # Convert into a private temp dir, then move the result into place:
+        #  - LibreOffice always names its output "<source stem>.<target>", so
+        #    writing straight into the output folder would clobber an existing
+        #    file of that name (even when the overwrite policy said "rename"),
+        #    or even the source itself for same-folder conversions.
+        #  - A per-job user profile lets several LibreOffice conversions run
+        #    in parallel; with a shared profile, all but one silently fail.
+        with tempfile.TemporaryDirectory(prefix="fileconverter_lo_") as tmp:
+            tmp_path = Path(tmp)
+            out_dir = tmp_path / "out"
+            profile_url = (tmp_path / "profile").resolve().as_uri()
+            cmd = [
+                soffice,
+                f"-env:UserInstallation={profile_url}",
+                "--headless",
+                "--norestore",
+            ]
+            if src_ext == "pdf" and target in _PDF_TO_WRITER_TARGETS:
+                cmd.append("--infilter=writer_pdf_import")
+            lo_target = "html" if target == "htm" else target
+            cmd += [
+                "--convert-to",
+                lo_target,
+                "--outdir",
+                str(out_dir),
+                str(job.source_path),
+            ]
+            proc = run_killable(cmd, progress_cb=progress_cb, timeout=180)
+            if proc.returncode != 0:
+                raise ConversionFailedError(
+                    f"LibreOffice conversion failed: {proc.stderr.strip()}"
+                )
+            produced = list(out_dir.glob(f"*.{lo_target}")) if out_dir.exists() else []
+            if not produced:
+                # LibreOffice exits 0 even when it has no export filter for
+                # the pair; surface its message instead of a vague failure.
+                detail = (proc.stderr or proc.stdout).strip() or "no output produced"
+                raise ConversionFailedError(
+                    f"LibreOffice could not convert {src_ext} -> {target}: {detail}"
+                )
+            shutil.move(str(produced[0]), str(job.output_path))
         return job.output_path.exists()
 
     def _try_pandoc(
         self, job: ConversionJob, src_ext: str, target: str, progress_cb
     ) -> bool:
         pandoc = _find_pandoc()
-        if not pandoc:
+        if not pandoc or src_ext not in _PANDOC_READERS:
+            return False
+        writer = _PANDOC_WRITERS.get(target)
+        if writer is None:
             return False
         if progress_cb:
             progress_cb(0.4, "Running Pandoc")
-        cmd = [pandoc, str(job.source_path), "-o", str(job.output_path)]
+        cmd = [
+            pandoc,
+            "-f",
+            _PANDOC_READERS[src_ext],
+            "-t",
+            writer,
+            "--standalone",
+            str(job.source_path),
+            "-o",
+            str(job.output_path),
+        ]
         # See _try_libreoffice: run_killable makes this cancellable.
         proc = run_killable(cmd, progress_cb=progress_cb, timeout=120)
         if proc.returncode != 0:
@@ -245,10 +345,28 @@ class DocumentConverter(BaseConverter):
         return job.output_path.exists()
 
 
-def _wrap_line(line: str, width: int) -> list[str]:
-    if not line:
-        return [""]
-    return [line[i : i + width] for i in range(0, len(line), width)]
+# Pandoc infers formats from extensions, but not for every one we use (it
+# has no idea what ".txt" is), and it can't read PDF/legacy binary formats
+# at all — so map explicitly and only try pairs it can actually do.
+_PANDOC_READERS = {
+    "md": "markdown",
+    "txt": "markdown",
+    "html": "html",
+    "htm": "html",
+    "docx": "docx",
+    "odt": "odt",
+    "rtf": "rtf",
+}
+_PANDOC_WRITERS = {
+    "md": "markdown",
+    "txt": "plain",
+    "html": "html",
+    "htm": "html",
+    "docx": "docx",
+    "odt": "odt",
+    "rtf": "rtf",
+    "pptx": "pptx",
+}
 
 
 register(DocumentConverter())

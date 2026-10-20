@@ -1,4 +1,4 @@
-"""Vector graphics conversion: SVG <-> PNG/PDF, and DXF -> SVG.
+"""Vector graphics conversion: SVG -> PNG/PDF, and DXF -> SVG/PNG/PDF.
 
 Uses ``cairosvg`` for SVG rasterization/PDF export (pure Python wheel with
 a bundled cairo, no manual system install needed on most platforms) and
@@ -24,11 +24,20 @@ _OUTPUT_FORMATS = frozenset({"png", "pdf", "svg"})
 class VectorConverter(BaseConverter):
     name = "Vector Graphics Converter"
     description = (
-        "Converts SVG to PNG or PDF, and DXF (CAD) drawings to SVG. "
+        "Converts SVG to PNG or PDF, and DXF (CAD) drawings to SVG, PNG or PDF. "
         "Requires cairosvg (SVG rendering) and/or ezdxf (DXF reading)."
     )
     input_formats = _INPUT_FORMATS
     output_formats = _OUTPUT_FORMATS
+
+    def can_convert(self, src_format: str, dst_format: str) -> bool:
+        src = src_format.lower().lstrip(".")
+        dst = dst_format.lower().lstrip(".")
+        if src == "svg":
+            return dst in _RASTER_FROM_SVG
+        if src == "dxf":
+            return dst in _OUTPUT_FORMATS
+        return False
 
     def check_available(self) -> tuple[bool, str]:
         missing = []
@@ -48,7 +57,7 @@ class VectorConverter(BaseConverter):
         self, job: ConversionJob, progress_cb: ProgressCallback = None
     ) -> ConversionResult:
         def _do() -> None:
-            src_ext = job.source_path.suffix.lower().lstrip(".")
+            src_ext = job.src_format
             target = job.target_format.lower().lstrip(".")
             options = job.options
 
@@ -58,7 +67,11 @@ class VectorConverter(BaseConverter):
             if src_ext == "svg" and target in _RASTER_FROM_SVG:
                 self._svg_to_raster(job, target, options)
             elif src_ext == "dxf" and target == "svg":
-                self._dxf_to_svg(job)
+                job.output_path.write_text(self._dxf_to_svg_string(job), encoding="utf-8")
+            elif src_ext == "dxf" and target in _RASTER_FROM_SVG:
+                # DXF -> SVG in memory, then render that SVG.
+                svg = self._dxf_to_svg_string(job)
+                self._svg_to_raster(job, target, options, svg_bytes=svg.encode("utf-8"))
             else:
                 raise ValueError(
                     f"Unsupported vector conversion: {src_ext} -> {target}"
@@ -69,7 +82,9 @@ class VectorConverter(BaseConverter):
 
         return self._run_timed(job, _do)
 
-    def _svg_to_raster(self, job: ConversionJob, target: str, options) -> None:
+    def _svg_to_raster(
+        self, job: ConversionJob, target: str, options, svg_bytes: bytes | None = None
+    ) -> None:
         try:
             import cairosvg
         except ImportError as exc:
@@ -77,12 +92,16 @@ class VectorConverter(BaseConverter):
                 "cairosvg", "Install with: pip install cairosvg"
             ) from exc
 
-        scale = options.get("scale", 1.0)
-        kwargs = {"url": str(job.source_path), "scale": scale}
+        scale = float(options.get("scale") or 1.0)
+        kwargs: dict = {"scale": scale}
+        if svg_bytes is not None:
+            kwargs["bytestring"] = svg_bytes
+        else:
+            kwargs["url"] = str(job.source_path)
         if options.get("width"):
-            kwargs["output_width"] = options.get("width")
+            kwargs["output_width"] = int(options.get("width"))
         if options.get("height"):
-            kwargs["output_height"] = options.get("height")
+            kwargs["output_height"] = int(options.get("height"))
         if options.get("background"):
             kwargs["background_color"] = options.get("background")
 
@@ -92,7 +111,7 @@ class VectorConverter(BaseConverter):
             kwargs.pop("background_color", None)  # PDF has no background concept
             cairosvg.svg2pdf(write_to=str(job.output_path), **kwargs)
 
-    def _dxf_to_svg(self, job: ConversionJob) -> None:
+    def _dxf_to_svg_string(self, job: ConversionJob) -> str:
         try:
             import ezdxf
             from ezdxf.addons.drawing import RenderContext, Frontend
@@ -109,8 +128,7 @@ class VectorConverter(BaseConverter):
         Frontend(RenderContext(doc), backend).draw_layout(msp)
         # Page size is auto-fitted to the drawing's extents (units in mm).
         page = Page(0, 0)
-        svg_string = backend.get_string(page)
-        job.output_path.write_text(svg_string, encoding="utf-8")
+        return backend.get_string(page)
 
 
 register(VectorConverter())

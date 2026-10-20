@@ -14,8 +14,10 @@ from ..core.base import BaseConverter, ConversionJob, ConversionResult, Progress
 from ..core.exceptions import MissingDependencyError
 from ..core.registry import register
 
-_CONTACT_FORMATS = frozenset({"vcf", "csv"})
-_CALENDAR_FORMATS = frozenset({"ics", "csv"})
+# The only pairs this converter actually implements.
+_SUPPORTED_PAIRS = frozenset(
+    {("vcf", "csv"), ("csv", "vcf"), ("ics", "csv"), ("csv", "ics")}
+)
 
 _VCARD_FIELDS = ["full_name", "first_name", "last_name", "email", "phone", "org"]
 _EVENT_FIELDS = ["summary", "start", "end", "location", "description"]
@@ -29,6 +31,14 @@ class ContactCalendarConverter(BaseConverter):
     )
     input_formats = frozenset({"vcf", "ics", "csv"})
     output_formats = frozenset({"vcf", "ics", "csv"})
+
+    def can_convert(self, src_format: str, dst_format: str) -> bool:
+        # Without this, the registry assumed every input could reach every
+        # output: VCF -> ICS was offered (and always failed), and this
+        # converter claimed CSV -> CSV, shadowing the spreadsheet
+        # converter's CSV re-delimiting.
+        pair = (src_format.lower().lstrip("."), dst_format.lower().lstrip("."))
+        return pair in _SUPPORTED_PAIRS
 
     def check_available(self) -> tuple[bool, str]:
         try:
@@ -49,7 +59,7 @@ class ContactCalendarConverter(BaseConverter):
                     "vobject", "Install with: pip install vobject"
                 ) from exc
 
-            src_ext = job.source_path.suffix.lower().lstrip(".")
+            src_ext = job.src_format
             target = job.target_format.lower().lstrip(".")
 
             if progress_cb:
@@ -76,7 +86,7 @@ class ContactCalendarConverter(BaseConverter):
 
     # -- Contacts (VCF <-> CSV) -------------------------------------------
     def _vcf_to_csv(self, vobject, job: ConversionJob) -> None:
-        text = job.source_path.read_text(encoding="utf-8")
+        text = job.source_path.read_text(encoding="utf-8-sig")
         rows = []
         for card in vobject.readComponents(text):
             full_name = getattr(card, "fn", None)
@@ -101,7 +111,7 @@ class ContactCalendarConverter(BaseConverter):
 
     def _csv_to_vcf(self, vobject, job: ConversionJob) -> None:
         cards = []
-        with open(job.source_path, newline="", encoding="utf-8") as fh:
+        with open(job.source_path, newline="", encoding="utf-8-sig") as fh:
             reader = csv.DictReader(fh)
             for row in reader:
                 card = vobject.vCard()
@@ -123,7 +133,7 @@ class ContactCalendarConverter(BaseConverter):
 
     # -- Calendar (ICS <-> CSV) -------------------------------------------
     def _ics_to_csv(self, vobject, job: ConversionJob) -> None:
-        text = job.source_path.read_text(encoding="utf-8")
+        text = job.source_path.read_text(encoding="utf-8-sig")
         rows = []
         for cal in vobject.readComponents(text):
             for component in getattr(cal, "vevent_list", []):
@@ -135,8 +145,8 @@ class ContactCalendarConverter(BaseConverter):
                 rows.append(
                     {
                         "summary": summary.value if summary else "",
-                        "start": str(dtstart.value) if dtstart else "",
-                        "end": str(dtend.value) if dtend else "",
+                        "start": _format_dt(dtstart.value) if dtstart else "",
+                        "end": _format_dt(dtend.value) if dtend else "",
                         "location": location.value if location else "",
                         "description": desc.value if desc else "",
                     }
@@ -147,10 +157,8 @@ class ContactCalendarConverter(BaseConverter):
             writer.writerows(rows)
 
     def _csv_to_ics(self, vobject, job: ConversionJob) -> None:
-        from datetime import datetime
-
         cal = vobject.iCalendar()
-        with open(job.source_path, newline="", encoding="utf-8") as fh:
+        with open(job.source_path, newline="", encoding="utf-8-sig") as fh:
             reader = csv.DictReader(fh)
             for row in reader:
                 event = cal.add("vevent")
@@ -167,14 +175,50 @@ class ContactCalendarConverter(BaseConverter):
 
     @staticmethod
     def _parse_dt(value: str):
-        from datetime import datetime
+        """Parse a CSV date/datetime cell. Accepts ISO 8601 (with or without
+        a timezone offset — which is what ICS -> CSV writes, so the round
+        trip works) plus a few common variants. A date-only value becomes
+        an all-day event."""
 
-        for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%d"):
+        from datetime import date, datetime
+
+        text = value.strip()
+        if len(text) == 10:
             try:
-                return datetime.strptime(value, fmt)
+                return date.fromisoformat(text)
+            except ValueError:
+                pass
+        try:
+            parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        except ValueError:
+            pass
+        else:
+            if parsed.tzinfo is not None:
+                # vobject can't serialize stdlib fixed-offset tzinfo objects
+                # ("Unable to guess TZID"); normalize to UTC, which it writes
+                # as the standard "...Z" form.
+                from dateutil import tz
+
+                parsed = parsed.astimezone(tz.tzutc())
+            return parsed
+        for fmt in ("%Y-%m-%d %H:%M", "%d/%m/%Y %H:%M", "%m/%d/%Y %H:%M", "%Y%m%dT%H%M%S"):
+            try:
+                return datetime.strptime(text, fmt)
             except ValueError:
                 continue
-        return value  # leave as string if unparseable; vobject may still handle it
+        raise ValueError(
+            f"Unrecognized date/time {value!r} — use ISO format, e.g. "
+            "2024-05-01 14:30 or 2024-05-01T14:30:00+02:00."
+        )
+
+
+def _format_dt(value) -> str:
+    """ISO 8601 text for a date/datetime from vobject (round-trips through
+    :meth:`ContactCalendarConverter._parse_dt`)."""
+
+    if hasattr(value, "isoformat"):
+        return value.isoformat(sep=" ") if hasattr(value, "hour") else value.isoformat()
+    return str(value)
 
 
 register(ContactCalendarConverter())

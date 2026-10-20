@@ -39,6 +39,7 @@ from ..core.base import ConversionJob, ConversionOptions
 from ..core.engine import ConversionEngine, build_output_path, output_conflict
 from ..core.logging_setup import setup_logging
 from ..core.registry import all_converters
+from .. import __version__
 from .theme import resolve_theme, stylesheet_for
 from .widgets.dialogs import (
     DoctorDialog,
@@ -47,7 +48,7 @@ from .widgets.dialogs import (
     PresetsDialog,
 )
 from .widgets.drop_area import DropArea
-from .widgets.queue_table import QueueTable
+from .widgets.queue_table import STATUS_DONE, QueueTable
 
 
 class EngineWorker(QObject):
@@ -90,6 +91,7 @@ class MainWindow(QMainWindow):
         self._active_job_ids: set[str] = set()
         self._batch_total = 0
         self._batch_completed = 0
+        self._batch_succeeded = 0
         self._output_dir: Optional[Path] = (
             Path(self.config.default_output_dir)
             if self.config.default_output_dir
@@ -155,7 +157,14 @@ class MainWindow(QMainWindow):
         self.bulk_format_combo = QComboBox()
         self.bulk_format_combo.setEditable(True)
         self.bulk_format_combo.addItems(
-            sorted({fmt for conv in all_converters() for fmt in conv.output_formats})
+            sorted(
+                {
+                    fmt
+                    for conv in all_converters()
+                    for fmt in conv.output_formats
+                    if fmt != "folder"
+                }
+            )
         )
         bulk_row.addWidget(self.bulk_format_combo)
         bulk_apply_btn = QPushButton("Apply")
@@ -349,6 +358,13 @@ class MainWindow(QMainWindow):
         self._report_added(added, skipped)
 
     def _on_clear_queue(self) -> None:
+        if self._active_job_ids:
+            QMessageBox.information(
+                self,
+                "Conversion in progress",
+                "Cancel the running batch before clearing the queue.",
+            )
+            return
         self.queue_table.clear_all()
 
     def _on_choose_output_dir(self) -> None:
@@ -382,14 +398,32 @@ class MainWindow(QMainWindow):
             )
             return
 
-        row_ids = self.queue_table.all_row_ids()
-        if not row_ids:
+        all_rows = self.queue_table.all_row_ids()
+        if not all_rows:
             QMessageBox.information(self, "Nothing to convert", "Add some files first.")
             return
+
+        # Only convert rows that haven't already been converted — pressing
+        # "Convert All" after adding a few more files used to redo every
+        # finished row too, piling up "name (1).ext", "name (2).ext" copies.
+        row_ids = [
+            rid for rid in all_rows if self.queue_table.status_for_row(rid) != STATUS_DONE
+        ]
+        if not row_ids:
+            again = QMessageBox.question(
+                self,
+                "Already converted",
+                "Every file in the queue has already been converted.\n"
+                "Convert them all again?",
+            )
+            if again != QMessageBox.StandardButton.Yes:
+                return
+            row_ids = all_rows
 
         options_dict = self._parse_options_json()
         if options_dict is None:
             return
+        options_dict.setdefault("preserve_metadata", self.config.preserve_metadata)
 
         effective_policy = self._resolve_overwrite_policy(row_ids)
         if effective_policy is None:
@@ -397,6 +431,7 @@ class MainWindow(QMainWindow):
 
         jobs: list[ConversionJob] = []
         skipped_rows = 0
+        reserved: set[Path] = set()  # outputs already claimed within this batch
         for row_id in row_ids:
             source_path = self.queue_table.path_for_row(row_id)
             target_format = self.queue_table.target_format_for_row(row_id)
@@ -410,6 +445,7 @@ class MainWindow(QMainWindow):
                 target_format,
                 self._output_dir,
                 overwrite_policy=effective_policy,
+                reserved=reserved,
             )
             if output_path is None:
                 self.queue_table.set_status(row_id, "Skipped (output already exists)")
@@ -423,7 +459,9 @@ class MainWindow(QMainWindow):
             )
             self.queue_table.set_job_id(row_id, job.job_id)
             jobs.append(job)
+            self.queue_table.set_progress(row_id, 0.0)
             self.queue_table.set_status(row_id, "Queued")
+            self.queue_table.set_active(row_id, True)
 
         if not jobs:
             if skipped_rows:
@@ -440,6 +478,7 @@ class MainWindow(QMainWindow):
         self._active_job_ids = {job.job_id for job in jobs}
         self._batch_total = len(jobs)
         self._batch_completed = 0
+        self._batch_succeeded = 0
 
         self.convert_btn.setEnabled(False)
         self.cancel_btn.setEnabled(True)
@@ -511,7 +550,7 @@ class MainWindow(QMainWindow):
         if not text:
             return {}
         try:
-            return json.loads(text)
+            parsed = json.loads(text)
         except json.JSONDecodeError as exc:
             QMessageBox.warning(
                 self,
@@ -519,6 +558,14 @@ class MainWindow(QMainWindow):
                 f"Advanced options must be valid JSON.\n\n{exc}",
             )
             return None
+        if not isinstance(parsed, dict):
+            QMessageBox.warning(
+                self,
+                "Invalid options",
+                'Advanced options must be a JSON object, e.g. {"quality": 85}.',
+            )
+            return None
+        return parsed
 
     def _on_job_progress(self, job_id: str, fraction: float, message: str) -> None:
         row_id = self.queue_table.row_id_for_job_id(job_id)
@@ -528,6 +575,8 @@ class MainWindow(QMainWindow):
     def _on_job_done(self, result) -> None:
         self._active_job_ids.discard(result.job.job_id)
         self._batch_completed += 1
+        if result.success:
+            self._batch_succeeded += 1
         if self._batch_total:
             self.batch_progress.setValue(
                 int(100 * self._batch_completed / self._batch_total)
@@ -536,9 +585,10 @@ class MainWindow(QMainWindow):
 
         row_id = self.queue_table.row_id_for_job_id(result.job.job_id)
         if row_id is not None:
+            self.queue_table.set_active(row_id, False)
             self.queue_table.set_output_path(row_id, result.output_path)
             if result.success:
-                status = "Done"
+                status = STATUS_DONE
             elif result.message == "Cancelled":
                 status = "Cancelled"
             else:
@@ -550,8 +600,17 @@ class MainWindow(QMainWindow):
         self.cancel_btn.setEnabled(False)
         self.cancel_btn.hide()
         self.batch_progress.hide()
-        self.statusBar().showMessage("Conversion batch finished")
+        failed = self._batch_total - self._batch_succeeded
+        if failed:
+            self.statusBar().showMessage(
+                f"Batch finished: {self._batch_succeeded} succeeded, {failed} failed or cancelled."
+            )
+        else:
+            self.statusBar().showMessage(
+                f"Batch finished: all {self._batch_total} file(s) converted."
+            )
         self._active_job_ids.clear()
+        self.queue_table.clear_active()
         if self._thread:
             self._thread.quit()
             self._thread.wait()
@@ -618,7 +677,9 @@ class MainWindow(QMainWindow):
         config_module.save_config(self.config)
 
         self.workers_spin.setValue(self.config.max_workers)
-        self.engine.set_max_workers(self.config.max_workers)
+        if self._thread is None:
+            self.engine.set_max_workers(self.config.max_workers)
+        self.engine.verify_output = self.config.verify_output
         self._output_dir = (
             Path(self.config.default_output_dir)
             if self.config.default_output_dir
@@ -635,7 +696,8 @@ class MainWindow(QMainWindow):
         QMessageBox.information(
             self,
             "About FileConverter",
-            "FileConverter — a modular, professional-grade file conversion toolkit.\n\n"
+            f"FileConverter {__version__} — a modular, professional-grade file "
+            "conversion toolkit.\n\n"
             "Supports images, documents, spreadsheets, audio, video, and archives, "
             "with a plugin architecture, batch processing (with retry and "
             "cancellation), presets, folder watching, and full conversion history.",
@@ -700,6 +762,21 @@ class MainWindow(QMainWindow):
             )
 
     def closeEvent(self, event) -> None:  # noqa: N802
+        if self._thread is not None:
+            answer = QMessageBox.question(
+                self,
+                "Conversion in progress",
+                "A batch is still converting. Cancel it and quit?",
+            )
+            if answer != QMessageBox.StandardButton.Yes:
+                event.ignore()
+                return
+            # Stop the jobs (killing any ffmpeg/LibreOffice child processes)
+            # and let the worker thread finish before Qt tears it down —
+            # destroying a running QThread aborts the whole process.
+            self.engine.cancel_all()
+            self._thread.quit()
+            self._thread.wait(10_000)
         self._persist_queue()
         self.engine.shutdown(wait=False)
         super().closeEvent(event)

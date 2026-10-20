@@ -9,7 +9,6 @@ directory when used programmatically; the GUI/CLI expose this as
 
 from __future__ import annotations
 
-import shutil
 import tarfile
 import zipfile
 from pathlib import Path
@@ -17,6 +16,7 @@ from typing import Literal
 
 from ..core.base import BaseConverter, ConversionJob, ConversionResult, ProgressCallback
 from ..core.exceptions import ConversionFailedError, MissingDependencyError
+from ..core.formats import FOLDER_FORMAT
 from ..core.registry import register
 
 _ARCHIVE_FORMATS = frozenset({"zip", "tar", "gz", "tgz", "bz2", "xz", "7z"})
@@ -74,9 +74,12 @@ def _assert_safe_member_names(
 
 class ArchiveConverter(BaseConverter):
     name = "Archive Converter"
-    description = "Repacks between zip/tar/tar.gz/tar.bz2/tar.xz/7z; extracts and creates archives."
+    description = (
+        "Repacks between zip/tar/tar.gz/tar.bz2/tar.xz/7z, and extracts an "
+        "archive into a folder (target 'folder')."
+    )
     input_formats = _ARCHIVE_FORMATS
-    output_formats = _ARCHIVE_FORMATS
+    output_formats = _ARCHIVE_FORMATS | {FOLDER_FORMAT}
 
     def check_available(self) -> tuple[bool, str]:
         return True, "OK (7z support requires: pip install py7zr)"
@@ -85,8 +88,17 @@ class ArchiveConverter(BaseConverter):
         self, job: ConversionJob, progress_cb: ProgressCallback = None
     ) -> ConversionResult:
         def _do() -> None:
-            src_ext = job.source_path.suffix.lower().lstrip(".")
+            src_ext = job.src_format
             target = job.target_format.lower().lstrip(".")
+
+            if target == FOLDER_FORMAT:
+                if progress_cb:
+                    progress_cb(0.1, "Extracting archive")
+                job.output_path.mkdir(parents=True, exist_ok=True)
+                self._extract(job.source_path, src_ext, job.output_path)
+                if progress_cb:
+                    progress_cb(0.95, "Extracted")
+                return
 
             if progress_cb:
                 progress_cb(0.05, "Extracting source archive")
@@ -123,20 +135,31 @@ class ArchiveConverter(BaseConverter):
         else:
             raise ValueError(f"Unsupported source archive format: {src_ext}")
 
+    @staticmethod
+    def _files_to_pack(source_dir: Path, output_path: Path) -> list[Path]:
+        """Every file under ``source_dir``, excluding the archive being
+        written (which would otherwise try to add itself when the output
+        folder is inside the folder being compressed)."""
+
+        output_resolved = output_path.resolve()
+        return [
+            f
+            for f in sorted(source_dir.rglob("*"))
+            if f.is_file() and f.resolve() != output_resolved
+        ]
+
     def _pack(self, source_dir: Path, target: str, output_path: Path) -> None:
         if target == "zip":
             with zipfile.ZipFile(output_path, "w", zipfile.ZIP_DEFLATED) as zf:
-                for file in sorted(source_dir.rglob("*")):
-                    if file.is_file():
-                        zf.write(file, file.relative_to(source_dir))
+                for file in self._files_to_pack(source_dir, output_path):
+                    zf.write(file, file.relative_to(source_dir))
         elif target == "7z":
             self._pack_7z(source_dir, output_path)
         elif target in _TAR_MODE_FOR_TARGET:
             mode = _TAR_MODE_FOR_TARGET[target]
             with tarfile.open(output_path, mode) as tf:
-                for file in sorted(source_dir.rglob("*")):
-                    if file.is_file():
-                        tf.add(file, file.relative_to(source_dir))
+                for file in self._files_to_pack(source_dir, output_path):
+                    tf.add(file, file.relative_to(source_dir))
         else:
             raise ValueError(f"Unsupported target archive format: {target}")
 
@@ -159,7 +182,8 @@ class ArchiveConverter(BaseConverter):
                 "py7zr", "Install with: pip install py7zr"
             ) from exc
         with py7zr.SevenZipFile(output_path, mode="w") as archive:
-            archive.writeall(source_dir, arcname=".")
+            for file in self._files_to_pack(source_dir, output_path):
+                archive.write(file, arcname=str(file.relative_to(source_dir)))
 
 
 class FolderArchiveConverter(BaseConverter):
@@ -167,14 +191,21 @@ class FolderArchiveConverter(BaseConverter):
 
     name = "Folder Compressor"
     description = "Compresses a whole folder into an archive."
-    input_formats = frozenset({"folder"})
+    input_formats = frozenset({FOLDER_FORMAT})
     output_formats = _ARCHIVE_FORMATS
+
+    def check_available(self) -> tuple[bool, str]:
+        return True, "OK (7z output requires: pip install py7zr)"
 
     def convert(
         self, job: ConversionJob, progress_cb: ProgressCallback = None
     ) -> ConversionResult:
         def _do() -> None:
             target = job.target_format.lower().lstrip(".")
+            if not job.source_path.is_dir():
+                raise ValueError(f"Not a folder: {job.source_path}")
+            if progress_cb:
+                progress_cb(0.1, "Compressing folder")
             archive_helper = ArchiveConverter()
             archive_helper._pack(job.source_path, target, job.output_path)
             if progress_cb:

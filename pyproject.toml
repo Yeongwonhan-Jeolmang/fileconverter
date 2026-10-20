@@ -34,10 +34,10 @@ gui = ["PySide6>=6.6"]
 images = ["Pillow>=10.0", "pypdfium2>=4.30"]
 images-heic = ["pillow-heif>=0.15"]
 documents = ["python-docx>=1.1", "pypdf>=4.0", "reportlab>=4.1", "markdown>=3.6", "html2text>=2020.1.16", "beautifulsoup4>=4.12"]
-spreadsheets = ["pandas>=2.2", "openpyxl>=3.1", "odfpy>=1.4", "pyarrow>=15.0"]
-audio = ["pydub>=0.25"]
+spreadsheets = ["pandas>=2.2", "openpyxl>=3.1", "odfpy>=1.4", "pyarrow>=15.0", "xlrd>=2.0"]
+audio = []  # audio/video only need the ffmpeg binary on PATH
 archives = ["py7zr>=0.21"]
-watch = ["watchdog>=4.0"]
+watch = []  # folder watching uses built-in polling; kept so ".[watch]" still installs
 data = ["pyyaml>=6.0", "tomli>=2.0; python_version < \"3.11\"", "tomli-w>=1.0"]
 vector = ["cairosvg>=2.7", "ezdxf>=1.1"]
 fonts = ["fonttools>=4.50", "brotli>=1.1"]
@@ -58,9 +58,8 @@ all = [
     "openpyxl>=3.1",
     "odfpy>=1.4",
     "pyarrow>=15.0",
-    "pydub>=0.25",
+    "xlrd>=2.0",
     "py7zr>=0.21",
-    "watchdog>=4.0",
     "pyyaml>=6.0",
     "tomli>=2.0; python_version < \"3.11\"",
     "tomli-w>=1.0",

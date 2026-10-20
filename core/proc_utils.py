@@ -26,9 +26,15 @@ def popen_killable(cmd: list[str], **kwargs) -> subprocess.Popen:
     spawns (ffmpeg, LibreOffice, and Calibre all sometimes fork helpers)."""
 
     if sys.platform == "win32":
-        # Needed so CTRL_BREAK_EVENT can be sent to this process (and only
-        # this process's group) later, without affecting our own process.
-        kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+        # CREATE_NEW_PROCESS_GROUP: lets CTRL_BREAK_EVENT target just this
+        # process's group later, without affecting our own process.
+        # CREATE_NO_WINDOW: stops a console window flashing up for every
+        # ffmpeg/LibreOffice run when launched from the windowed GUI build.
+        kwargs["creationflags"] = (
+            kwargs.get("creationflags", 0)
+            | subprocess.CREATE_NEW_PROCESS_GROUP
+            | subprocess.CREATE_NO_WINDOW
+        )
     else:
         kwargs.setdefault("start_new_session", True)
     return subprocess.Popen(cmd, **kwargs)
@@ -60,7 +66,17 @@ def kill_process_tree(proc: subprocess.Popen, timeout: float = 3.0) -> None:
 
     try:
         if sys.platform == "win32":
-            proc.kill()
+            # proc.kill() only terminates the top process; taskkill /T also
+            # takes down any helpers it spawned (e.g. soffice.bin).
+            subprocess.run(
+                ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                creationflags=subprocess.CREATE_NO_WINDOW,
+                check=False,
+            )
+            if proc.poll() is None:
+                proc.kill()
         else:
             os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
     except (ProcessLookupError, OSError):

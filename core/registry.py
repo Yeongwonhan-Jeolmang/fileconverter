@@ -36,7 +36,18 @@ def find_converters(src_format: str, dst_format: str) -> list[BaseConverter]:
 
 
 def find_converter(src_format: str, dst_format: str) -> BaseConverter | None:
+    """First registered converter for this pair, preferring one whose
+    dependencies are actually installed when several could handle it."""
+
     matches = find_converters(src_format, dst_format)
+    if len(matches) > 1:
+        for converter in matches:
+            try:
+                available, _reason = converter.check_available()
+            except Exception:  # noqa: BLE001
+                available = False
+            if available:
+                return converter
     return matches[0] if matches else None
 
 
@@ -47,7 +58,10 @@ def supported_targets(src_format: str) -> list[str]:
     targets: set[str] = set()
     for c in _CONVERTERS:
         if src_format in c.input_formats:
-            targets.update(c.output_formats)
+            # Ask each converter about each pair rather than assuming every
+            # input can reach every output: some converters only support
+            # specific pairs (e.g. VCF/ICS only convert to/from CSV).
+            targets.update(t for t in c.output_formats if c.can_convert(src_format, t))
     targets.discard(src_format)
     return sorted(targets)
 

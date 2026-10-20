@@ -11,7 +11,6 @@ document_converter.py:
 from __future__ import annotations
 
 import shutil
-from pathlib import Path
 
 from ..core.base import BaseConverter, ConversionJob, ConversionResult, ProgressCallback
 from ..core.exceptions import ConversionFailedError, MissingDependencyError
@@ -34,6 +33,15 @@ class EbookConverter(BaseConverter):
     )
     input_formats = _EBOOK_FORMATS
     output_formats = _EBOOK_FORMATS
+
+    def can_convert(self, src_format: str, dst_format: str) -> bool:
+        src = src_format.lower().lstrip(".")
+        dst = dst_format.lower().lstrip(".")
+        # Plain TXT <-> HTML isn't an ebook conversion (the document
+        # converter handles it), and X -> X isn't a conversion at all.
+        if src == dst or {src, dst} <= {"txt", "html"}:
+            return False
+        return super().can_convert(src, dst)
 
     def check_available(self) -> tuple[bool, str]:
         has_ebooklib = True
@@ -58,7 +66,7 @@ class EbookConverter(BaseConverter):
         self, job: ConversionJob, progress_cb: ProgressCallback = None
     ) -> ConversionResult:
         def _do() -> None:
-            src_ext = job.source_path.suffix.lower().lstrip(".")
+            src_ext = job.src_format
             target = job.target_format.lower().lstrip(".")
 
             if progress_cb:

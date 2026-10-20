@@ -90,6 +90,14 @@ class ConversionEngine:
         if token:
             token.cancel()
 
+    def cancel_all(self) -> None:
+        """Cancel every job that is queued or running on this engine."""
+
+        with self._lock:
+            tokens = list(self._tokens.values())
+        for token in tokens:
+            token.cancel()
+
     def set_max_workers(self, max_workers: int) -> None:
         """Resize the underlying thread pool. Safe to call between batches
         (e.g. when the user changes the 'workers' setting in the GUI)."""
@@ -118,9 +126,19 @@ class ConversionEngine:
             self._tokens[job.job_id] = token
 
         def _task() -> ConversionResult:
-            result = self._run_job(job, token, on_progress)
+            try:
+                result = self._run_job(job, token, on_progress)
+            finally:
+                # Drop the token once the job is finished so a long-running
+                # GUI session doesn't accumulate one per job ever submitted.
+                with self._lock:
+                    if self._tokens.get(job.job_id) is token:
+                        del self._tokens[job.job_id]
             if on_done:
-                on_done(result)
+                try:
+                    on_done(result)
+                except Exception:  # noqa: BLE001 — a UI callback bug must not lose the result
+                    self.logger.exception("on_done callback raised for %s", job.job_id)
             return result
 
         return self._executor.submit(_task)
@@ -153,8 +171,13 @@ class ConversionEngine:
             if attempt >= max_retries:
                 break
 
+            # Retry real failures only — a job the user cancelled should stay
+            # cancelled rather than being started again.
             failed_jobs = [
-                job for job in pending if not results_by_id[job.job_id].success
+                job
+                for job in pending
+                if not results_by_id[job.job_id].success
+                and results_by_id[job.job_id].message != "Cancelled"
             ]
             if not failed_jobs:
                 break
@@ -178,12 +201,28 @@ class ConversionEngine:
     ) -> ConversionResult:
         start = time.monotonic()
         src_format = detect_format(job.source_path)
+        job.source_format = src_format
+        output_existed_before = job.output_path.exists()
+
+        def cleanup_partial_output() -> None:
+            # Never leave a truncated/half-written file behind after a
+            # failure or cancel — but only remove a file this job created.
+            if output_existed_before:
+                return
+            try:
+                if job.output_path.is_file():
+                    job.output_path.unlink()
+            except OSError:
+                pass
 
         def progress(fraction: float, message: str = "") -> None:
             if token.is_cancelled():
                 raise CancelledError("Job cancelled by user")
             if on_progress:
-                on_progress(job.job_id, fraction, message)
+                try:
+                    on_progress(job.job_id, fraction, message)
+                except Exception:  # noqa: BLE001 — a UI callback bug must not fail the job
+                    self.logger.exception("on_progress callback raised for %s", job.job_id)
 
         # Converters that shell out (video/ebook/document converters, via
         # core.proc_utils.run_killable) look for these attributes so they
@@ -217,8 +256,24 @@ class ConversionEngine:
                     result.success = False
                     result.error = f"Output verification failed: {reason}"
 
-            progress(1.0, "Done" if result.success else f"Failed: {result.error}")
-            history.record(
+            if not result.success and token.is_cancelled():
+                # The subprocess was killed by cancel() and exited non-zero;
+                # report it as a cancellation rather than a conversion error.
+                raise CancelledError("Job cancelled by user")
+
+            if on_progress:
+                # Report completion directly rather than via progress(): a
+                # cancel that arrives after the output was fully written
+                # shouldn't retroactively turn a finished job into "Cancelled".
+                try:
+                    on_progress(
+                        job.job_id,
+                        1.0,
+                        "Done" if result.success else f"Failed: {result.error}",
+                    )
+                except Exception:  # noqa: BLE001
+                    self.logger.exception("on_progress callback raised for %s", job.job_id)
+            _record_history(
                 source_path=str(job.source_path),
                 output_path=str(result.output_path) if result.output_path else None,
                 source_format=src_format,
@@ -228,6 +283,8 @@ class ConversionEngine:
                 error=result.error,
             )
             if not result.success:
+                cleanup_partial_output()
+                result.output_path = None
                 self.logger.warning(
                     "Conversion failed for %s: %s", job.source_path, result.error
                 )
@@ -235,7 +292,8 @@ class ConversionEngine:
 
         except CancelledError as exc:
             duration = time.monotonic() - start
-            history.record(
+            cleanup_partial_output()
+            _record_history(
                 str(job.source_path),
                 None,
                 src_format,
@@ -255,7 +313,8 @@ class ConversionEngine:
             duration = time.monotonic() - start
             error_message = f"{type(exc).__name__}: {exc}"
             self.logger.exception("Unhandled error converting %s", job.source_path)
-            history.record(
+            cleanup_partial_output()
+            _record_history(
                 str(job.source_path),
                 None,
                 src_format,
@@ -273,7 +332,49 @@ class ConversionEngine:
             )
 
 
+def _record_history(*args: Any, **kwargs: Any) -> None:
+    """Record to the history DB without ever letting a history failure
+    (locked/corrupt DB, read-only home dir, ...) change a job's outcome."""
+
+    try:
+        history.record(*args, **kwargs)
+    except Exception:  # noqa: BLE001
+        get_logger().exception("Could not write conversion history entry")
+
+
 _OVERWRITE_POLICIES = frozenset({"ask", "overwrite", "skip", "rename"})
+
+
+def _output_stem(source_path: Path) -> str:
+    """Output file stem for ``source_path``. Multi-part archive suffixes are
+    stripped as a whole so ``backup.tar.gz`` -> ``backup.zip``, not
+    ``backup.tar.zip``."""
+
+    name = source_path.name
+    lowered = name.lower()
+    for multi in (".tar.gz", ".tar.bz2", ".tar.xz"):
+        if lowered.endswith(multi) and len(name) > len(multi):
+            return name[: -len(multi)]
+    return source_path.stem if source_path.suffix else name
+
+
+def _output_suffix(target_format: str) -> str:
+    """File suffix for a target format; the tar flavours get their
+    conventional double extension (``gz`` -> ``.tar.gz``)."""
+
+    return {"gz": "tar.gz", "bz2": "tar.bz2", "xz": "tar.xz"}.get(
+        target_format, target_format
+    )
+
+
+def _default_output_candidate(
+    source_path: Path, target_format: str, output_dir: Optional[Path]
+) -> Path:
+    directory = Path(output_dir) if output_dir else source_path.parent
+    if target_format == "folder":
+        # Extracting an archive: a folder named after it, no extension.
+        return directory / _output_stem(source_path)
+    return directory / f"{_output_stem(source_path)}.{_output_suffix(target_format)}"
 
 
 def build_output_path(
@@ -281,28 +382,43 @@ def build_output_path(
     target_format: str,
     output_dir: Optional[Path] = None,
     overwrite_policy: str = "rename",
+    reserved: Optional[set[Path]] = None,
 ) -> Optional[Path]:
     """Compute a sensible output path: same stem, new extension, in
     ``output_dir`` if given, else alongside the source file.
+
+    ``reserved`` is an optional set of output paths already claimed by
+    *other jobs in the same batch* (which don't exist on disk yet). Pass the
+    same set for every file in a batch so two sources with the same stem
+    (``a/photo.png`` and ``b/photo.png`` into one ``--output-dir``) don't
+    both get ``photo.jpg`` and silently overwrite each other. The chosen
+    path is added to the set.
     """
 
     source_path = Path(source_path)
     target_format = target_format.lower().lstrip(".")
-    directory = Path(output_dir) if output_dir else source_path.parent
-    candidate = directory / f"{source_path.stem}.{target_format}"
+    candidate = _default_output_candidate(source_path, target_format, output_dir)
+    reserved_resolved = {p.resolve() for p in reserved} if reserved else set()
 
     same_as_source = candidate.resolve() == source_path.resolve()
-    conflict = same_as_source or candidate.exists()
+    taken_in_batch = candidate.resolve() in reserved_resolved
+    conflict = same_as_source or taken_in_batch or candidate.exists()
 
     if not conflict:
-        return candidate
-    if overwrite_policy == "overwrite" and not same_as_source:
-        return candidate
-    if overwrite_policy == "skip":
-        return None
-    # "rename", "ask" (unresolved), and "overwrite" when the candidate *is*
-    # the source file all fall back to the safe, non-destructive default.
-    return _avoid_overwrite(candidate, source_path)
+        result: Optional[Path] = candidate
+    elif overwrite_policy == "overwrite" and not same_as_source and not taken_in_batch:
+        result = candidate
+    elif overwrite_policy == "skip" and not taken_in_batch:
+        result = None
+    else:
+        # "rename", "ask" (unresolved), "overwrite" when the candidate *is*
+        # the source file, and any clash with another job in this batch
+        # all fall back to the safe, non-destructive default.
+        result = _avoid_overwrite(candidate, source_path, reserved_resolved)
+
+    if result is not None and reserved is not None:
+        reserved.add(result)
+    return result
 
 
 def output_conflict(
@@ -316,8 +432,7 @@ def output_conflict(
 
     source_path = Path(source_path)
     target_format = target_format.lower().lstrip(".")
-    directory = Path(output_dir) if output_dir else source_path.parent
-    candidate = directory / f"{source_path.stem}.{target_format}"
+    candidate = _default_output_candidate(source_path, target_format, output_dir)
     if candidate.resolve() == source_path.resolve() or candidate.exists():
         return candidate
     return None
@@ -331,7 +446,10 @@ def jobs_from_results_json(
     """
 
     jobs: list[ConversionJob] = []
+    reserved: set[Path] = set()
     for entry in entries:
+        if not isinstance(entry, dict):
+            continue
         if only_failed and entry.get("success"):
             continue
         source = entry.get("source")
@@ -341,28 +459,55 @@ def jobs_from_results_json(
         source_path = Path(source)
         output = entry.get("output")
         output_path = (
-            Path(output) if output else build_output_path(source_path, target_format)
+            Path(output)
+            if output
+            else build_output_path(source_path, target_format, reserved=reserved)
         )
         if output_path is None:
             continue
+        # Results files written by newer versions carry the original
+        # options, so a retry converts with the same quality/preset settings
+        # as the first attempt instead of silently falling back to defaults.
+        options = entry.get("options")
         jobs.append(
             ConversionJob(
                 source_path=source_path,
                 output_path=output_path,
                 target_format=target_format,
-                options=ConversionOptions(),
+                options=ConversionOptions.from_dict(
+                    options if isinstance(options, dict) else None
+                ),
             )
         )
     return jobs
 
 
-def _avoid_overwrite(candidate: Path, source_path: Path) -> Path:
-    if candidate.resolve() != source_path.resolve() and not candidate.exists():
+def _avoid_overwrite(
+    candidate: Path, source_path: Path, reserved: Optional[set[Path]] = None
+) -> Path:
+    reserved = reserved or set()
+    source_resolved = source_path.resolve()
+
+    def _free(path: Path) -> bool:
+        resolved = path.resolve()
+        return (
+            not path.exists()
+            and resolved != source_resolved
+            and resolved not in reserved
+        )
+
+    if _free(candidate):
         return candidate
+    # Keep multi-part suffixes together: "backup (1).tar.gz", not "backup.tar (1).gz".
+    name = candidate.name
     stem, suffix = candidate.stem, candidate.suffix
+    for multi in (".tar.gz", ".tar.bz2", ".tar.xz"):
+        if name.lower().endswith(multi):
+            stem, suffix = name[: -len(multi)], name[-len(multi):]
+            break
     n = 1
     while True:
         alt = candidate.with_name(f"{stem} ({n}){suffix}")
-        if not alt.exists() and alt.resolve() != source_path.resolve():
+        if _free(alt):
             return alt
         n += 1

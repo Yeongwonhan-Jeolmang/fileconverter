@@ -9,6 +9,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
+FOLDER_FORMAT = "folder"
+"""Pseudo-format reported for directories (used by "compress folder")."""
+
 # (offset, magic_bytes, format)
 _MAGIC_SIGNATURES: list[tuple[int, bytes, str]] = [
     (0, b"\x89PNG\r\n\x1a\n", "png"),
@@ -27,7 +30,8 @@ _MAGIC_SIGNATURES: list[tuple[int, bytes, str]] = [
     (0, b"ID3", "mp3"),
     (0, b"RIFF", "wav"),  # RIFF also covers AVI; refined by extension when possible
     (0, b"fLaC", "flac"),
-    (4, b"ftyp", "mp4"),
+    (0, b"OggS", "ogg"),
+    (4, b"ftyp", "mp4"),  # ISO-BMFF; refined by the brand — see _refine_ftyp
     (0, b"\x1a\x45\xdf\xa3", "mkv"),  # also webm (EBML)
 ]
 
@@ -36,8 +40,36 @@ _ZIP_SIGNATURES: dict[str, str] = {
     "word/document.xml": "docx",
     "xl/workbook.xml": "xlsx",
     "ppt/presentation.xml": "pptx",
-    "content.xml": "odt",
-    "mimetype": "epub",
+}
+
+# ODF documents and EPUBs both store their MIME type in a "mimetype" entry,
+# so read it rather than guessing from entry names (an .ods and an .odt
+# both contain "content.xml").
+_ZIP_MIMETYPES: dict[str, str] = {
+    "application/epub+zip": "epub",
+    "application/vnd.oasis.opendocument.text": "odt",
+    "application/vnd.oasis.opendocument.spreadsheet": "ods",
+    "application/vnd.oasis.opendocument.presentation": "odp",
+}
+
+# ISO base media file format "major brand" -> format. Anything not listed
+# (isom, mp41, mp42, avc1, ...) is treated as plain mp4.
+_FTYP_BRANDS: dict[bytes, str] = {
+    b"heic": "heic",
+    b"heix": "heic",
+    b"hevc": "heic",
+    b"heim": "heic",
+    b"heis": "heic",
+    b"mif1": "heif",
+    b"msf1": "heif",
+    b"avif": "avif",
+    b"qt  ": "mov",
+    b"M4A ": "m4a",
+    b"M4B ": "m4a",
+    b"M4V ": "m4v",
+    b"3gp4": "3gp",
+    b"3gp5": "3gp",
+    b"3g2a": "3g2",
 }
 
 
@@ -49,17 +81,30 @@ def normalize_ext(ext_or_path: str | Path) -> str:
     """
 
     text = str(ext_or_path)
-    if isinstance(ext_or_path, Path) or "/" in text or "\\" in text or "." in text:
-        ext = Path(ext_or_path).suffix
-    else:
-        ext = text
+    is_bare_ext = (
+        not isinstance(ext_or_path, Path)
+        and "/" not in text
+        and "\\" not in text
+        and text.count(".") <= 1
+        and (text.startswith(".") or "." not in text)
+    )
+    # (".PNG" has to be special-cased: pathlib treats it as a hidden file
+    # with *no* suffix, so it used to normalize to "".)
+    ext = text if is_bare_ext else Path(ext_or_path).suffix
     return ext.lower().lstrip(".")
 
 
 def detect_format(path: Path) -> str:
-    """Best-effort format detection: extension first, magic bytes fallback."""
+    """Best-effort format detection: extension first, magic bytes fallback.
+
+    Directories are reported as ``"folder"`` so they can be routed to the
+    folder -> archive converter.
+    """
 
     path = Path(path)
+    if path.is_dir():
+        return FOLDER_FORMAT
+
     ext = normalize_ext(path)
     if not ext:
         return sniff_format(path) or ""
@@ -80,12 +125,18 @@ _WEAK_SNIFF_FORMATS = frozenset({"bmp"})
 
 
 _RELATED_FORMAT_GROUPS: list[frozenset[str]] = [
-    frozenset({"zip", *_ZIP_SIGNATURES.values()}),
+    frozenset({"zip", "docx", "xlsx", "pptx", "odt", "ods", "odp", "epub", "jar"}),
     frozenset({"jpg", "jpeg"}),
-    frozenset({"mp4", "mov", "m4a", "m4v"}),
+    frozenset({"tif", "tiff"}),
+    frozenset({"heic", "heif"}),
+    frozenset({"mp4", "mov", "m4a", "m4v", "m4b", "3gp", "3g2", "aac"}),
     frozenset({"wav", "avi"}),
     frozenset({"mkv", "webm"}),
     frozenset({"gz", "tgz"}),
+    frozenset({"ogg", "oga", "ogv", "opus"}),
+    # MP3s tagged with ID3 sometimes carry other audio inside; trust the
+    # extension for audio-ish files rather than calling them all "mp3".
+    frozenset({"mp3", "flac", "wav", "aiff", "aac", "m4a", "ogg", "wma"}),
 ]
 
 
@@ -112,8 +163,9 @@ def sniff_format(path: Path) -> str | None:
     for offset, magic, fmt in _MAGIC_SIGNATURES:
         if head[offset : offset + len(magic)] == magic:
             if fmt == "zip":
-                disambiguated = _disambiguate_zip(path)
-                return disambiguated or "zip"
+                return _disambiguate_zip(path) or "zip"
+            if fmt == "mp4":
+                return _FTYP_BRANDS.get(head[8:12], "mp4")
             return fmt
     return None
 
@@ -124,6 +176,10 @@ def _disambiguate_zip(path: Path) -> str | None:
     try:
         with zipfile.ZipFile(path) as zf:
             names = set(zf.namelist())
+            if "mimetype" in names:
+                mimetype = zf.read("mimetype").decode("ascii", "replace").strip()
+                if mimetype in _ZIP_MIMETYPES:
+                    return _ZIP_MIMETYPES[mimetype]
     except Exception:
         return None
     for marker, fmt in _ZIP_SIGNATURES.items():

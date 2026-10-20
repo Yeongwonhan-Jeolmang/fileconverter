@@ -20,9 +20,13 @@ _DEFAULT_DELIMITER = {"csv": ",", "tsv": "\t"}
 
 class SpreadsheetConverter(BaseConverter):
     name = "Spreadsheet Converter"
-    description = "Converts between CSV, TSV, Excel (xlsx/xls), JSON, Parquet, and ODS."
+    description = (
+        "Converts between CSV, TSV, Excel (xlsx; xls read-only), JSON, Parquet, and ODS."
+    )
     input_formats = _TABULAR_FORMATS
-    output_formats = _TABULAR_FORMATS
+    # Legacy .xls can be read (via xlrd) but not written by pandas, so it
+    # isn't offered as a target.
+    output_formats = _TABULAR_FORMATS - {"xls"}
 
     def check_available(self) -> tuple[bool, str]:
         try:
@@ -43,7 +47,7 @@ class SpreadsheetConverter(BaseConverter):
                     "pandas", "Install with: pip install pandas openpyxl"
                 ) from exc
 
-            src_ext = job.source_path.suffix.lower().lstrip(".")
+            src_ext = job.src_format
             target = job.target_format.lower().lstrip(".")
             options = job.options
 
@@ -63,12 +67,28 @@ class SpreadsheetConverter(BaseConverter):
         return self._run_timed(job, _do)
 
     def _read(self, pd, job: ConversionJob, src_ext: str, options):
-        sheet_name = options.get("sheet_name", 0)
+        # ``sheet_name=None`` would make pandas return a dict of *every*
+        # sheet, which the writers can't handle — fall back to the first.
+        sheet_name = options.get("sheet_name")
+        if sheet_name is None or sheet_name == "":
+            sheet_name = 0
         if src_ext in ("csv", "tsv"):
-            delimiter = options.get("delimiter", _DEFAULT_DELIMITER.get(src_ext, ","))
-            return pd.read_csv(job.source_path, delimiter=delimiter)
+            delimiter = options.get("delimiter") or _DEFAULT_DELIMITER.get(src_ext, ",")
+            # utf-8-sig transparently strips the BOM Excel puts on CSV exports
+            # (otherwise the first column header comes out as "\ufeffName").
+            return pd.read_csv(
+                job.source_path,
+                sep=delimiter,
+                encoding=options.get("encoding") or "utf-8-sig",
+            )
         if src_ext in ("xlsx", "xls"):
-            return pd.read_excel(job.source_path, sheet_name=sheet_name)
+            engine_pkg = "xlrd" if src_ext == "xls" else "openpyxl"
+            try:
+                return pd.read_excel(job.source_path, sheet_name=sheet_name)
+            except ImportError as exc:
+                raise MissingDependencyError(
+                    engine_pkg, f"Install with: pip install {engine_pkg}"
+                ) from exc
         if src_ext == "ods":
             try:
                 return pd.read_excel(
@@ -93,14 +113,20 @@ class SpreadsheetConverter(BaseConverter):
 
     def _write(self, df, job: ConversionJob, target: str, options) -> None:
         if target in ("csv", "tsv"):
-            delimiter = options.get("delimiter", _DEFAULT_DELIMITER.get(target, ","))
+            delimiter = options.get("delimiter") or _DEFAULT_DELIMITER.get(target, ",")
             df.to_csv(job.output_path, sep=delimiter, index=False)
         elif target == "xlsx":
-            df.to_excel(
-                job.output_path,
-                index=False,
-                sheet_name=str(options.get("sheet_name") or "Sheet1"),
-            )
+            # Only reuse sheet_name for the output when it's a real name;
+            # an index like 2 ("read the third sheet") isn't a good title.
+            sheet_title = options.get("sheet_name")
+            if not isinstance(sheet_title, str) or not sheet_title.strip():
+                sheet_title = "Sheet1"
+            try:
+                df.to_excel(job.output_path, index=False, sheet_name=sheet_title[:31])
+            except ImportError as exc:
+                raise MissingDependencyError(
+                    "openpyxl", "Install with: pip install openpyxl"
+                ) from exc
         elif target == "xls":
             raise ValueError("Writing legacy .xls is not supported; use .xlsx instead.")
         elif target == "ods":

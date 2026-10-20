@@ -22,15 +22,13 @@ pandas>=2.2
 openpyxl>=3.1        # xlsx read/write
 odfpy>=1.4           # ods read/write (optional)
 pyarrow>=15.0         # parquet read/write (optional)
+xlrd>=2.0            # legacy .xls reading (optional)
 
-# Audio (also requires the ffmpeg binary on PATH — see README)
-pydub>=0.25
+# Audio & video: no Python package needed, just the ffmpeg binary on PATH
+# (see README).
 
 # Archives
 py7zr>=0.21          # 7z support (optional; zip/tar work with no extra deps)
-
-# Folder watching (optional; a polling fallback is used if absent)
-watchdog>=4.0
 
 # Data formats (YAML/TOML <-> JSON/XML)
 pyyaml>=6.0
