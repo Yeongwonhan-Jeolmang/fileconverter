@@ -1,6 +1,6 @@
 import builtins
 
-from fileconverter.core.registry import all_converters, find_converter
+from core.registry import all_converters, find_converter
 
 
 def _break_cairosvg(monkeypatch):
@@ -46,8 +46,8 @@ def test_broken_check_does_not_break_converter_lookup(monkeypatch):
 
 
 def test_svg_conversion_fails_cleanly_without_cairo(monkeypatch, work):
-    from fileconverter.core.base import ConversionJob
-    from fileconverter.core.engine import ConversionEngine
+    from core.base import ConversionJob
+    from core.engine import ConversionEngine
 
     _break_cairosvg(monkeypatch)
     src = work / "pic.svg"
